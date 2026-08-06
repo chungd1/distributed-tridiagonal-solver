@@ -390,3 +390,49 @@ TEST_CASE("Backward coefficient preparation rejects invalid dimensions") {
       dtdma::prepare_backward_coefficients(original, wrong_batch_size),
       std::invalid_argument);
 }
+
+TEST_CASE("The complete prepared operator agrees with the active CaNS reference fixture") {
+  // CaNS-World/CaNS main, 245a23348ef795af9aebeda6c767a46ca8be45e8,
+  // src/solver_gpu.f90::gaussel_dtdma_gpu_fast_1d, division before multiplication.
+  constexpr dtdma::Scalar cans_tolerance = 1.0e-6F;
+  const std::array<dtdma::Scalar, 5> original_lower{
+      0.75F, -1.25F, 0.875F, -1.5F, 1.125F};
+  const std::array<dtdma::Scalar, 5> original_diagonal{
+      4.5F, 5.25F, 6.125F, 5.875F, 6.75F};
+  const std::array<dtdma::Scalar, 5> original_upper{
+      -0.625F, 1.375F, -0.875F, 1.25F, -0.5F};
+  const std::array<dtdma::Scalar, 5> original_rhs{
+      2.0F, -3.0F, 4.5F, -6.0F, 7.25F};
+  const std::array<dtdma::Scalar, 5> cans_prepared_lower{
+      0.75F, -1.30050015F, 0.216538385F, 0.0530035309F,
+      -0.0105493469F};
+  const std::array<dtdma::Scalar, 5> cans_prepared_diagonal{
+      4.3451786F, 5.25F, 5.89583349F, 5.65238523F, 6.50121117F};
+  const std::array<dtdma::Scalar, 5> cans_prepared_upper{
+      -0.0053723529F, -0.0451277643F, 0.193502381F, 1.25F, -0.5F};
+  dtdma::TridiagonalBatch original(5, 1);
+  dtdma::PreparedOperatorBatch prepared(5, 1);
+
+  for (std::size_t row = 0; row < original.row_count(); ++row) {
+    original.lower(row, 0) = original_lower[row];
+    original.diagonal(row, 0) = original_diagonal[row];
+    original.upper(row, 0) = original_upper[row];
+    original.rhs(row, 0) = original_rhs[row];
+  }
+
+  dtdma::prepare_forward_coefficients(original, prepared);
+  dtdma::prepare_backward_coefficients(original, prepared);
+
+  for (std::size_t row = 0; row < original.row_count(); ++row) {
+    CHECK(prepared.prepared_lower(row, 0) ==
+          Catch::Approx(cans_prepared_lower[row]).margin(cans_tolerance));
+    CHECK(prepared.prepared_diagonal(row, 0) ==
+          Catch::Approx(cans_prepared_diagonal[row]).margin(cans_tolerance));
+    CHECK(prepared.prepared_upper(row, 0) ==
+          Catch::Approx(cans_prepared_upper[row]).margin(cans_tolerance));
+    CHECK(original.lower(row, 0) == original_lower[row]);
+    CHECK(original.diagonal(row, 0) == original_diagonal[row]);
+    CHECK(original.upper(row, 0) == original_upper[row]);
+    CHECK(original.rhs(row, 0) == original_rhs[row]);
+  }
+}
