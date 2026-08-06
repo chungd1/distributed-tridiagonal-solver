@@ -138,7 +138,7 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
         prepared_upper);
 }
 
-TEST_CASE("Single-partition assembly combines coincident endpoint terms") {
+TEST_CASE("Single-partition assembly canonicalizes physical exterior slots") {
   dtdma::TridiagonalBatch original(5, 1);
   dtdma::PreparedOperatorBatch prepared(5, 1);
   dtdma::ReducedRhsBatch working(5, 1);
@@ -172,11 +172,11 @@ TEST_CASE("Single-partition assembly combines coincident endpoint terms") {
       original, prepared, working, endpoints, reduced_system);
 
   CHECK(reduced_system.lower(0, 0) == 0.0F);
-  CHECK(reduced_system.diagonal(0, 0) == 12.0F);
+  CHECK(reduced_system.diagonal(0, 0) == 10.0F);
   CHECK(reduced_system.upper(0, 0) == 3.0F);
   CHECK(reduced_system.rhs(0, 0) == 7.0F);
   CHECK(reduced_system.lower(1, 0) == 4.0F);
-  CHECK(reduced_system.diagonal(1, 0) == 25.0F);
+  CHECK(reduced_system.diagonal(1, 0) == 20.0F);
   CHECK(reduced_system.upper(1, 0) == 0.0F);
   CHECK(reduced_system.rhs(1, 0) == 9.0F);
   CHECK(std::vector<dtdma::Scalar>(prepared.prepared_lower().begin(),

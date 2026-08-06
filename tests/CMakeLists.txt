@@ -38,3 +38,8 @@ add_executable(test_single_partition_solve test_single_partition_solve.cpp)
 target_link_libraries(test_single_partition_solve
                       PRIVATE dtdma Catch2::Catch2WithMain)
 catch_discover_tests(test_single_partition_solve)
+
+add_executable(test_uniform_virtual_solve test_uniform_virtual_solve.cpp)
+target_link_libraries(test_uniform_virtual_solve
+                      PRIVATE dtdma Catch2::Catch2WithMain)
+catch_discover_tests(test_uniform_virtual_solve)

@@ -38,7 +38,6 @@ inline void assemble_single_partition_reduced_system(
   for (std::size_t system = 0; system < original.batch_size(); ++system) {
     reduced_system.lower(0, system) = 0.0F;
     reduced_system.diagonal(0, system) =
-        prepared.prepared_lower(0, system) +
         prepared.prepared_diagonal(0, system);
     reduced_system.upper(0, system) =
         prepared.prepared_upper(0, system);
@@ -48,8 +47,7 @@ inline void assemble_single_partition_reduced_system(
     reduced_system.lower(1, system) =
         prepared.prepared_lower(last_row, system);
     reduced_system.diagonal(1, system) =
-        prepared.prepared_diagonal(last_row, system) +
-        prepared.prepared_upper(last_row, system);
+        prepared.prepared_diagonal(last_row, system);
     reduced_system.upper(1, system) = 0.0F;
     reduced_system.rhs(1, system) =
         reduced_rhs_endpoints.endpoint(system, 1);
