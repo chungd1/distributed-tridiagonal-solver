@@ -28,3 +28,8 @@ add_executable(test_forward_coefficient_preparation
 target_link_libraries(test_forward_coefficient_preparation
                       PRIVATE dtdma Catch2::Catch2WithMain)
 catch_discover_tests(test_forward_coefficient_preparation)
+
+add_executable(test_forward_rhs_reduction test_forward_rhs_reduction.cpp)
+target_link_libraries(test_forward_rhs_reduction
+                      PRIVATE dtdma Catch2::Catch2WithMain)
+catch_discover_tests(test_forward_rhs_reduction)
