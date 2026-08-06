@@ -13,3 +13,7 @@ target_link_libraries(test_tridiagonal_batch PRIVATE dtdma Catch2::Catch2WithMai
 
 include(Catch)
 catch_discover_tests(test_tridiagonal_batch)
+
+add_executable(test_thomas_solver test_thomas_solver.cpp)
+target_link_libraries(test_thomas_solver PRIVATE dtdma Catch2::Catch2WithMain)
+catch_discover_tests(test_thomas_solver)
