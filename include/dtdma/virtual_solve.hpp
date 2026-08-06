@@ -10,8 +10,8 @@
 #include "dtdma/reduced_rhs_endpoints.hpp"
 #include "dtdma/single_partition_reconstruction.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
-#include "dtdma/uniform_reduced_system.hpp"
-#include "dtdma/uniform_virtual_partitioning.hpp"
+#include "dtdma/virtual_partitioning.hpp"
+#include "dtdma/virtual_reduced_system.hpp"
 
 #include <cstddef>
 #include <stdexcept>
@@ -19,9 +19,9 @@
 
 namespace dtdma {
 
-inline void solve_uniform_virtual_system(
+inline void solve_virtual_system(
     const TridiagonalBatch& original,
-    const UniformVirtualPartitioning& partitioning,
+    const VirtualPartitioning& partitioning,
     ReducedRhsBatch& solution) {
   if (partitioning.global_row_count() != original.row_count() ||
       solution.row_count() != original.row_count() ||
@@ -30,8 +30,7 @@ inline void solve_uniform_virtual_system(
         "global operator, partitioning, and solution dimensions must match");
   }
 
-  const std::size_t partition_count = partitioning.virtual_rank_count();
-  const std::size_t local_row_count = partitioning.local_row_count();
+  const std::size_t partition_count = partitioning.partition_count();
   const std::size_t batch_size = original.batch_size();
 
   std::vector<PreparedOperatorBatch> prepared_partitions;
@@ -43,11 +42,12 @@ inline void solve_uniform_virtual_system(
 
   for (std::size_t rank = 0; rank < partition_count; ++rank) {
     const auto partition = partitioning.partition(rank);
+    const std::size_t local_row_count = partition.local_row_count;
     TridiagonalBatch local_original(local_row_count, batch_size);
 
     for (std::size_t local_row = 0;
          local_row < local_row_count; ++local_row) {
-      const std::size_t global_row = partition.local_row_begin + local_row;
+      const std::size_t global_row = partition.begin_row + local_row;
       for (std::size_t system = 0; system < batch_size; ++system) {
         local_original.lower(local_row, system) =
             original.lower(global_row, system);
@@ -78,10 +78,10 @@ inline void solve_uniform_virtual_system(
   }
 
   TridiagonalBatch reduced_system(2 * partition_count, batch_size);
-  assemble_uniform_reduced_system(
+  assemble_virtual_reduced_system(
       partitioning, prepared_partitions, partition_endpoints, reduced_system);
   batched_thomas_solve(reduced_system);
-  recover_uniform_reduced_endpoints(partitioning, reduced_system,
+  recover_virtual_reduced_endpoints(partitioning, reduced_system,
                                     partition_endpoints);
 
   for (std::size_t rank = 0; rank < partition_count; ++rank) {
@@ -89,9 +89,10 @@ inline void solve_uniform_virtual_system(
                                  working_partitions[rank],
                                  partition_endpoints[rank]);
     const auto partition = partitioning.partition(rank);
+    const std::size_t local_row_count = partition.local_row_count;
     for (std::size_t local_row = 0;
          local_row < local_row_count; ++local_row) {
-      const std::size_t global_row = partition.local_row_begin + local_row;
+      const std::size_t global_row = partition.begin_row + local_row;
       for (std::size_t system = 0; system < batch_size; ++system) {
         solution.rhs(global_row, system) =
             working_partitions[rank].rhs(local_row, system);

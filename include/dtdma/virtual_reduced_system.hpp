@@ -3,7 +3,7 @@
 #include "dtdma/prepared_operator_batch.hpp"
 #include "dtdma/reduced_rhs_endpoints.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
-#include "dtdma/uniform_virtual_partitioning.hpp"
+#include "dtdma/virtual_partitioning.hpp"
 
 #include <cstddef>
 #include <span>
@@ -11,12 +11,12 @@
 
 namespace dtdma {
 
-inline void assemble_uniform_reduced_system(
-    const UniformVirtualPartitioning& partitioning,
+inline void assemble_virtual_reduced_system(
+    const VirtualPartitioning& partitioning,
     const std::span<const PreparedOperatorBatch> prepared_partitions,
     const std::span<const ReducedRhsEndpoints> reduced_rhs_endpoints,
     TridiagonalBatch& reduced_system) {
-  const std::size_t partition_count = partitioning.virtual_rank_count();
+  const std::size_t partition_count = partitioning.partition_count();
   if (prepared_partitions.size() != partition_count ||
       reduced_rhs_endpoints.size() != partition_count) {
     throw std::invalid_argument(
@@ -29,8 +29,9 @@ inline void assemble_uniform_reduced_system(
 
   const std::size_t batch_size = reduced_system.batch_size();
   for (std::size_t rank = 0; rank < partition_count; ++rank) {
+    const auto partition = partitioning.partition(rank);
     if (prepared_partitions[rank].row_count() !=
-            partitioning.local_row_count() ||
+            partition.local_row_count ||
         prepared_partitions[rank].batch_size() != batch_size ||
         reduced_rhs_endpoints[rank].batch_size() != batch_size) {
       throw std::invalid_argument(
@@ -72,11 +73,11 @@ inline void assemble_uniform_reduced_system(
   }
 }
 
-inline void recover_uniform_reduced_endpoints(
-    const UniformVirtualPartitioning& partitioning,
+inline void recover_virtual_reduced_endpoints(
+    const VirtualPartitioning& partitioning,
     const TridiagonalBatch& solved_reduced_system,
     const std::span<ReducedRhsEndpoints> solved_endpoints) {
-  const std::size_t partition_count = partitioning.virtual_rank_count();
+  const std::size_t partition_count = partitioning.partition_count();
   if (solved_reduced_system.row_count() != 2 * partition_count ||
       solved_endpoints.size() != partition_count) {
     throw std::invalid_argument(
