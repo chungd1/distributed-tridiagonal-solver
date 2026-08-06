@@ -1,7 +1,9 @@
+#include "dtdma/backward_rhs_reduction.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
 #include "dtdma/indexing.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
 #include "dtdma/reduced_rhs_batch.hpp"
+#include "dtdma/reduced_rhs_endpoints.hpp"
 #include "dtdma/scalar.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
 
@@ -192,7 +194,7 @@ TEST_CASE("Forward RHS reduction rejects unsupported or incompatible batches") {
                   std::invalid_argument);
 }
 
-TEST_CASE("Forward RHS reduction preserves the original and prepared batches") {
+TEST_CASE("Complete RHS reduction preserves the original and prepared batches") {
   dtdma::TridiagonalBatch original(4, 2);
   dtdma::PreparedOperatorBatch prepared(4, 2);
   dtdma::ReducedRhsBatch working(4, 2);
@@ -226,6 +228,7 @@ TEST_CASE("Forward RHS reduction preserves the original and prepared batches") {
 
   dtdma::initialize_reduced_rhs(original, working);
   dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_backward(original, prepared, working);
 
   CHECK(std::vector<dtdma::Scalar>(original.lower().begin(),
                                    original.lower().end()) == original_lower);
@@ -288,6 +291,264 @@ TEST_CASE("Forward RHS reduction agrees with the active CaNS reference fixture")
   CHECK(working.rhs(3, 0) ==
         Catch::Approx(cans_reduced_rhs[3]).margin(cans_tolerance));
   CHECK(working.rhs(4, 0) ==
+        Catch::Approx(cans_reduced_rhs[4]).margin(cans_tolerance));
+
+  for (std::size_t row = 0; row < original.row_count(); ++row) {
+    CHECK(original.lower(row, 0) == original_lower[row]);
+    CHECK(original.diagonal(row, 0) == original_diagonal[row]);
+    CHECK(original.upper(row, 0) == original_upper[row]);
+    CHECK(original.rhs(row, 0) == original_rhs[row]);
+    CHECK(prepared.prepared_diagonal(row, 0) == prepared_diagonal[row]);
+  }
+}
+
+TEST_CASE("Backward RHS reduction matches a complete hand calculation") {
+  dtdma::TridiagonalBatch original(5, 1);
+  dtdma::PreparedOperatorBatch prepared(5, 1);
+  dtdma::ReducedRhsBatch working(5, 1);
+  const std::array<dtdma::Scalar, 5> lower{9.0F, 2.0F, 3.0F, 4.0F,
+                                           5.0F};
+  const std::array<dtdma::Scalar, 5> upper{5.0F, 6.0F, 7.0F, 8.0F,
+                                           9.0F};
+  const std::array<dtdma::Scalar, 5> prepared_diagonal{
+      8.0F, 10.0F, 20.0F, 25.0F, 30.0F};
+  const std::array<dtdma::Scalar, 5> rhs{1.0F, 2.0F, 10.0F, 20.0F,
+                                         30.0F};
+  const std::array<dtdma::Scalar, 5> expected_rhs{
+      0.64896F, 0.70208F, 4.3264F, 18.12F, 26.376F};
+
+  for (std::size_t row = 0; row < original.row_count(); ++row) {
+    original.lower(row, 0) = lower[row];
+    original.upper(row, 0) = upper[row];
+    original.rhs(row, 0) = rhs[row];
+    prepared.prepared_diagonal(row, 0) = prepared_diagonal[row];
+  }
+
+  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::reduce_rhs_forward(original, prepared, working);
+  const dtdma::Scalar forward_penultimate = working.rhs(3, 0);
+  const dtdma::Scalar forward_last = working.rhs(4, 0);
+  dtdma::reduce_rhs_backward(original, prepared, working);
+
+  CHECK(working.rhs(0, 0) ==
+        Catch::Approx(expected_rhs[0]).margin(1.0e-5F));
+  CHECK(working.rhs(1, 0) ==
+        Catch::Approx(expected_rhs[1]).margin(1.0e-5F));
+  CHECK(working.rhs(2, 0) ==
+        Catch::Approx(expected_rhs[2]).margin(1.0e-5F));
+  CHECK(working.rhs(3, 0) ==
+        Catch::Approx(expected_rhs[3]).margin(1.0e-5F));
+  CHECK(working.rhs(4, 0) ==
+        Catch::Approx(expected_rhs[4]).margin(1.0e-5F));
+  CHECK(working.rhs(3, 0) == forward_penultimate);
+  CHECK(working.rhs(4, 0) == forward_last);
+}
+
+TEST_CASE("Backward RHS reduction keeps varying batch systems independent") {
+  dtdma::TridiagonalBatch original(4, 2);
+  dtdma::PreparedOperatorBatch prepared(4, 2);
+  dtdma::ReducedRhsBatch working(4, 2);
+  const std::array<dtdma::Scalar, 4> lower_0{9.0F, 2.0F, 3.0F, 4.0F};
+  const std::array<dtdma::Scalar, 4> upper_0{5.0F, 6.0F, 7.0F, 8.0F};
+  const std::array<dtdma::Scalar, 4> diagonal_0{8.0F, 10.0F, 20.0F,
+                                                25.0F};
+  const std::array<dtdma::Scalar, 4> rhs_0{1.0F, 2.0F, 10.0F, 20.0F};
+  const std::array<dtdma::Scalar, 4> lower_1{-7.0F, 5.0F, -2.0F,
+                                             3.0F};
+  const std::array<dtdma::Scalar, 4> upper_1{-2.0F, 4.0F, -5.0F,
+                                             6.0F};
+  const std::array<dtdma::Scalar, 4> diagonal_1{6.0F, 8.0F, 12.0F,
+                                                14.0F};
+  const std::array<dtdma::Scalar, 4> rhs_1{100.0F, -4.0F, 7.0F, 5.0F};
+
+  for (std::size_t row = 0; row < original.row_count(); ++row) {
+    original.lower(row, 0) = lower_0[row];
+    original.upper(row, 0) = upper_0[row];
+    original.rhs(row, 0) = rhs_0[row];
+    prepared.prepared_diagonal(row, 0) = diagonal_0[row];
+    original.lower(row, 1) = lower_1[row];
+    original.upper(row, 1) = upper_1[row];
+    original.rhs(row, 1) = rhs_1[row];
+    prepared.prepared_diagonal(row, 1) = diagonal_1[row];
+  }
+
+  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_backward(original, prepared, working);
+
+  CHECK(working.rhs(0, 0) == Catch::Approx(1.41F));
+  CHECK(working.rhs(1, 0) == Catch::Approx(-0.82F));
+  CHECK(working.rhs(2, 0) == Catch::Approx(9.4F));
+  CHECK(working.rhs(3, 0) == Catch::Approx(18.12F));
+  CHECK(working.rhs(0, 1) == Catch::Approx(98.5F));
+  CHECK(working.rhs(1, 1) == Catch::Approx(-6.0F));
+  CHECK(working.rhs(2, 1) == Catch::Approx(6.0F));
+  CHECK(working.rhs(3, 1) == Catch::Approx(3.5F));
+}
+
+TEST_CASE("Backward RHS reduction updates only row zero for three rows") {
+  dtdma::TridiagonalBatch original(3, 1);
+  dtdma::PreparedOperatorBatch prepared(3, 1);
+  dtdma::ReducedRhsBatch working(3, 1);
+  original.lower(2, 0) = 4.0F;
+  original.upper(0, 0) = 2.0F;
+  original.rhs(0, 0) = 3.0F;
+  original.rhs(1, 0) = 6.0F;
+  original.rhs(2, 0) = 10.0F;
+  prepared.prepared_diagonal(1, 0) = 8.0F;
+
+  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_backward(original, prepared, working);
+
+  CHECK(working.rhs(0, 0) == 1.5F);
+  CHECK(working.rhs(1, 0) == 6.0F);
+  CHECK(working.rhs(2, 0) == 7.0F);
+}
+
+TEST_CASE("Backward RHS reduction rejects unsupported or incompatible batches") {
+  const dtdma::TridiagonalBatch too_short(2, 1);
+  dtdma::PreparedOperatorBatch too_short_prepared(2, 1);
+  dtdma::ReducedRhsBatch too_short_working(2, 1);
+  CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
+                      too_short, too_short_prepared, too_short_working),
+                  std::invalid_argument);
+
+  const dtdma::TridiagonalBatch original(4, 2);
+  dtdma::PreparedOperatorBatch prepared(4, 2);
+  dtdma::PreparedOperatorBatch wrong_prepared_rows(3, 2);
+  dtdma::PreparedOperatorBatch wrong_prepared_batch(4, 3);
+  dtdma::ReducedRhsBatch working(4, 2);
+  dtdma::ReducedRhsBatch wrong_working_rows(3, 2);
+  dtdma::ReducedRhsBatch wrong_working_batch(4, 3);
+
+  CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
+                      original, wrong_prepared_rows, working),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
+                      original, wrong_prepared_batch, working),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
+                      original, prepared, wrong_working_rows),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
+                      original, prepared, wrong_working_batch),
+                  std::invalid_argument);
+}
+
+TEST_CASE("Reduced RHS endpoints use endpoint-major canonical storage") {
+  dtdma::ReducedRhsEndpoints endpoints(3);
+
+  CHECK(endpoints.batch_size() == 3);
+  CHECK(endpoints.element_count() == 6);
+  endpoints.endpoint(0, 0) = 1.0F;
+  endpoints.endpoint(1, 0) = 2.0F;
+  endpoints.endpoint(2, 0) = 3.0F;
+  endpoints.endpoint(0, 1) = 10.0F;
+  endpoints.endpoint(1, 1) = 20.0F;
+  endpoints.endpoint(2, 1) = 30.0F;
+
+  CHECK(endpoints.endpoints()[0] == 1.0F);
+  CHECK(endpoints.endpoints()[1] == 2.0F);
+  CHECK(endpoints.endpoints()[2] == 3.0F);
+  CHECK(endpoints.endpoints()[3] == 10.0F);
+  CHECK(endpoints.endpoints()[4] == 20.0F);
+  CHECK(endpoints.endpoints()[5] == 30.0F);
+
+  const dtdma::ReducedRhsEndpoints& const_endpoints = endpoints;
+  STATIC_CHECK(std::is_same_v<decltype(endpoints.endpoints()),
+                              std::span<dtdma::Scalar>>);
+  STATIC_CHECK(std::is_same_v<decltype(const_endpoints.endpoints()),
+                              std::span<const dtdma::Scalar>>);
+  CHECK(const_endpoints.endpoint(2, 1) == 30.0F);
+  CHECK_THROWS_AS(endpoints.endpoint(3, 0), std::out_of_range);
+  CHECK_THROWS_AS(const_endpoints.endpoint(0, 2), std::out_of_range);
+}
+
+TEST_CASE("Reduced RHS endpoints reject invalid dimensions") {
+  CHECK_THROWS_AS(dtdma::ReducedRhsEndpoints(0), std::invalid_argument);
+  const auto maximum = std::numeric_limits<std::size_t>::max();
+  CHECK_THROWS_AS(dtdma::ReducedRhsEndpoints(maximum), std::length_error);
+}
+
+TEST_CASE("Endpoint extraction copies first and last reduced rows only") {
+  dtdma::ReducedRhsBatch working(4, 2);
+  dtdma::ReducedRhsEndpoints endpoints(2);
+  const std::array<dtdma::Scalar, 8> rhs{1.0F, 10.0F, 2.0F, 20.0F,
+                                         3.0F, 30.0F, 4.0F, 40.0F};
+  for (std::size_t index = 0; index < working.element_count(); ++index) {
+    working.rhs()[index] = rhs[index];
+  }
+  const std::vector<dtdma::Scalar> preserved_rhs(working.rhs().begin(),
+                                                  working.rhs().end());
+
+  dtdma::extract_reduced_rhs_endpoints(working, endpoints);
+
+  CHECK(endpoints.endpoint(0, 0) == 1.0F);
+  CHECK(endpoints.endpoint(1, 0) == 10.0F);
+  CHECK(endpoints.endpoint(0, 1) == 4.0F);
+  CHECK(endpoints.endpoint(1, 1) == 40.0F);
+  CHECK(std::vector<dtdma::Scalar>(working.rhs().begin(),
+                                   working.rhs().end()) == preserved_rhs);
+
+  dtdma::ReducedRhsEndpoints wrong_batch_size(3);
+  CHECK_THROWS_AS(
+      dtdma::extract_reduced_rhs_endpoints(working, wrong_batch_size),
+      std::invalid_argument);
+  const dtdma::ReducedRhsBatch too_short(2, 2);
+  CHECK_THROWS_AS(dtdma::extract_reduced_rhs_endpoints(too_short, endpoints),
+                  std::invalid_argument);
+}
+
+TEST_CASE("Complete RHS reduction agrees with the active CaNS reference fixture") {
+  // CaNS-World/CaNS main, 245a23348ef795af9aebeda6c767a46ca8be45e8,
+  // src/solver_gpu.f90::gaussel_dtdma_gpu_fast_1d; reciprocal-diagonal
+  // multiplication ordering with norm = 1.
+  constexpr dtdma::Scalar cans_tolerance = 1.0e-6F;
+  const std::array<dtdma::Scalar, 5> original_lower{
+      0.75F, -1.25F, 0.875F, -1.5F, 1.125F};
+  const std::array<dtdma::Scalar, 5> original_diagonal{
+      4.5F, 5.25F, 6.125F, 5.875F, 6.75F};
+  const std::array<dtdma::Scalar, 5> original_upper{
+      -0.625F, 1.375F, -0.875F, 1.25F, -0.5F};
+  const std::array<dtdma::Scalar, 5> prepared_diagonal{
+      4.3451786F, 5.25F, 5.89583349F, 5.65238523F, 6.50121117F};
+  const std::array<dtdma::Scalar, 5> original_rhs{
+      2.0F, -3.0F, 4.5F, -6.0F, 7.25F};
+  const std::array<dtdma::Scalar, 5> cans_reduced_rhs{
+      1.52435839F, -3.99538946F, 4.2681098F, -4.72791529F,
+      8.19100189F};
+  dtdma::TridiagonalBatch original(5, 1);
+  dtdma::PreparedOperatorBatch prepared(5, 1);
+  dtdma::ReducedRhsBatch working(5, 1);
+  dtdma::ReducedRhsEndpoints endpoints(1);
+
+  for (std::size_t row = 0; row < original.row_count(); ++row) {
+    original.lower(row, 0) = original_lower[row];
+    original.diagonal(row, 0) = original_diagonal[row];
+    original.upper(row, 0) = original_upper[row];
+    original.rhs(row, 0) = original_rhs[row];
+    prepared.prepared_diagonal(row, 0) = prepared_diagonal[row];
+  }
+
+  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::extract_reduced_rhs_endpoints(working, endpoints);
+
+  CHECK(working.rhs(0, 0) ==
+        Catch::Approx(cans_reduced_rhs[0]).margin(cans_tolerance));
+  CHECK(working.rhs(1, 0) ==
+        Catch::Approx(cans_reduced_rhs[1]).margin(cans_tolerance));
+  CHECK(working.rhs(2, 0) ==
+        Catch::Approx(cans_reduced_rhs[2]).margin(cans_tolerance));
+  CHECK(working.rhs(3, 0) ==
+        Catch::Approx(cans_reduced_rhs[3]).margin(cans_tolerance));
+  CHECK(working.rhs(4, 0) ==
+        Catch::Approx(cans_reduced_rhs[4]).margin(cans_tolerance));
+  CHECK(endpoints.endpoint(0, 0) ==
+        Catch::Approx(cans_reduced_rhs[0]).margin(cans_tolerance));
+  CHECK(endpoints.endpoint(0, 1) ==
         Catch::Approx(cans_reduced_rhs[4]).margin(cans_tolerance));
 
   for (std::size_t row = 0; row < original.row_count(); ++row) {
