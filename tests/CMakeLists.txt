@@ -33,3 +33,8 @@ add_executable(test_forward_rhs_reduction test_forward_rhs_reduction.cpp)
 target_link_libraries(test_forward_rhs_reduction
                       PRIVATE dtdma Catch2::Catch2WithMain)
 catch_discover_tests(test_forward_rhs_reduction)
+
+add_executable(test_single_partition_solve test_single_partition_solve.cpp)
+target_link_libraries(test_single_partition_solve
+                      PRIVATE dtdma Catch2::Catch2WithMain)
+catch_discover_tests(test_single_partition_solve)
