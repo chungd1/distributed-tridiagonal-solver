@@ -20,7 +20,7 @@ inline void prepare_backward_coefficients(const OriginalOperator& original,
       prepared.storage_system_count() !=
           detail::storage_system_count(original)) {
     throw std::invalid_argument(
-        "original and prepared batch dimensions must match");
+        "original and prepared coefficient dimensions must match");
   }
 
   const std::size_t last_row = original.row_count() - 1;

@@ -11,25 +11,18 @@
 
 namespace dtdma {
 
-template <typename OriginalOperator, typename PreparedOperator,
-          typename ReducedOperator>
+template <typename PreparedOperator, typename ReducedOperator>
 inline void assemble_single_partition_reduced_system(
-    const OriginalOperator& original,
     const PreparedOperator& prepared,
     const RhsBatch& working,
     const EndpointBatch& reduced_rhs_endpoints,
     ReducedOperator& reduced_system,
     RhsBatch& reduced_rhs) {
-  if (original.row_count() < 3) {
+  if (prepared.row_count() < 3) {
     throw std::invalid_argument(
         "single-partition assembly requires at least three local rows");
   }
-  if (prepared.row_count() != original.row_count() ||
-      prepared.storage_system_count() !=
-          detail::storage_system_count(original) ||
-      working.row_count() != original.row_count() ||
-      !detail::rhs_batch_size_is_compatible(original,
-                                             working.batch_size()) ||
+  if (working.row_count() != prepared.row_count() ||
       !detail::rhs_batch_size_is_compatible(prepared,
                                              working.batch_size()) ||
       reduced_rhs_endpoints.batch_size() != working.batch_size()) {
@@ -39,13 +32,15 @@ inline void assemble_single_partition_reduced_system(
   if (reduced_system.row_count() != 2 ||
       reduced_rhs.row_count() != 2 ||
       reduced_rhs.batch_size() != working.batch_size() ||
+      detail::storage_system_count(reduced_system) !=
+          prepared.storage_system_count() ||
       !detail::rhs_batch_size_is_compatible(reduced_system,
                                              working.batch_size())) {
     throw std::invalid_argument(
         "single-partition reduced system must have two matching rows");
   }
 
-  const std::size_t last_row = original.row_count() - 1;
+  const std::size_t last_row = prepared.row_count() - 1;
   for (std::size_t storage_system = 0;
        storage_system < prepared.storage_system_count(); ++storage_system) {
     reduced_system.lower(0, storage_system) = 0.0F;

@@ -1,7 +1,8 @@
 #pragma once
 
 #include "dtdma/prepared_operator_batch.hpp"
-#include "dtdma/shared_prepared_operator.hpp"
+#include "dtdma/prepared_operator_batch_shared_offdiagonals.hpp"
+#include "dtdma/prepared_operator_shared.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
 #include "dtdma/tridiagonal_shared.hpp"
 #include "dtdma/tridiagonal_shifted_diagonal.hpp"
@@ -56,15 +57,21 @@ inline bool rhs_batch_size_is_compatible(
 }
 
 inline bool rhs_batch_size_is_compatible(
-    const SharedPreparedOperator&,
+    const PreparedOperatorShared&,
     const std::size_t) noexcept {
   return true;
 }
 
 inline bool rhs_batch_size_is_compatible(
+    const PreparedOperatorBatchSharedOffdiagonals& prepared,
+    const std::size_t batch_size) noexcept {
+  return prepared.system_count() == batch_size;
+}
+
+inline bool rhs_batch_size_is_compatible(
     const PreparedOperatorBatch& prepared,
     const std::size_t batch_size) noexcept {
-  return prepared.batch_size() == batch_size;
+  return prepared.system_count() == batch_size;
 }
 
 }  // namespace dtdma::detail

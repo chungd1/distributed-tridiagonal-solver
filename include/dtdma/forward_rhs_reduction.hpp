@@ -28,30 +28,24 @@ inline void initialize_reduced_rhs(const RhsBatch& input,
   }
 }
 
-template <typename OriginalOperator, typename PreparedOperator>
-inline void reduce_rhs_forward(const OriginalOperator& original,
-                               const PreparedOperator& prepared,
+template <typename PreparedOperator>
+inline void reduce_rhs_forward(const PreparedOperator& prepared,
                                RhsBatch& working) {
-  if (original.row_count() < 3) {
+  if (prepared.row_count() < 3) {
     throw std::invalid_argument("RHS reduction requires at least three rows");
   }
-  if (prepared.row_count() != original.row_count() ||
-      working.row_count() != original.row_count() ||
-      prepared.storage_system_count() !=
-          detail::storage_system_count(original) ||
-      !detail::rhs_batch_size_is_compatible(original,
-                                             working.batch_size()) ||
+  if (working.row_count() != prepared.row_count() ||
       !detail::rhs_batch_size_is_compatible(prepared,
                                              working.batch_size())) {
     throw std::invalid_argument(
-        "original, prepared, and RHS working batch dimensions must match");
+        "prepared coefficient and RHS dimensions must match");
   }
 
   for (std::size_t system = 0; system < working.batch_size(); ++system) {
-    for (std::size_t row = 2; row < original.row_count(); ++row) {
+    for (std::size_t row = 2; row < prepared.row_count(); ++row) {
       working.rhs(row, system) =
           working.rhs(row, system) -
-          original.lower(row, system) * working.rhs(row - 1, system) /
+          prepared.lower(row, system) * working.rhs(row - 1, system) /
               prepared.prepared_diagonal(row - 1, system);
     }
   }

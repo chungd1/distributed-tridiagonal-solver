@@ -20,15 +20,19 @@ TEST_CASE("A prepared operator batch mirrors the original batch layout") {
   dtdma::PreparedOperatorBatch prepared(4, 3);
 
   CHECK(prepared.row_count() == original.row_count());
-  CHECK(prepared.batch_size() == original.system_count());
+  CHECK(prepared.system_count() == original.system_count());
   CHECK(prepared.element_count() == original.element_count());
   CHECK(prepared.prepared_lower().size() == original.element_count());
   CHECK(prepared.prepared_diagonal().size() == original.element_count());
   CHECK(prepared.prepared_upper().size() == original.element_count());
+  CHECK(prepared.lower().empty());
+  CHECK(prepared.upper().empty());
+  CHECK_THROWS_AS(prepared.lower(0, 0), std::out_of_range);
+  CHECK_THROWS_AS(prepared.upper(0, 0), std::out_of_range);
 
   prepared.prepared_diagonal(2, 1) = 7.0F;
   CHECK(prepared.prepared_diagonal()[
-            dtdma::canonical_index(2, 1, prepared.batch_size())] == 7.0F);
+            dtdma::canonical_index(2, 1, prepared.system_count())] == 7.0F);
 
   const dtdma::PreparedOperatorBatch& const_prepared = prepared;
   STATIC_CHECK(std::is_same_v<decltype(const_prepared.prepared_lower()),

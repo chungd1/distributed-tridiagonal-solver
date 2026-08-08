@@ -12,6 +12,9 @@
 namespace dtdma {
 
 class PreparedOperatorBatch;
+class TridiagonalBatch;
+
+PreparedOperatorBatch prepare_operator(TridiagonalBatch&& original);
 
 class TridiagonalBatch {
  public:
@@ -102,6 +105,9 @@ class TridiagonalBatch {
     }
     return canonical_index(row, system, system_count_);
   }
+
+  friend PreparedOperatorBatch prepare_operator(
+      TridiagonalBatch&& original);
 
   std::size_t row_count_;
   std::size_t system_count_;

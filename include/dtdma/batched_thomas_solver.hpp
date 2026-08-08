@@ -48,7 +48,7 @@ inline void batched_thomas_solve(const TridiagonalStorage& coefficients,
       !detail::rhs_batch_size_is_compatible(coefficients,
                                              rhs.batch_size())) {
     throw std::invalid_argument(
-        "coefficient and RHS batch dimensions must match");
+        "coefficient-system and RHS dimensions must match");
   }
 
   std::vector<Scalar> lower(row_count);

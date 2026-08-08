@@ -1,6 +1,7 @@
 #include "dtdma/backward_rhs_reduction.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
 #include "dtdma/indexing.hpp"
+#include "dtdma/prepare_operator.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
 #include "dtdma/rhs_batch.hpp"
 #include "dtdma/endpoint_batch.hpp"
@@ -10,13 +11,40 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <limits>
 #include <span>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 #include <vector>
+
+namespace {
+
+void adopt_retained_offdiagonals(
+    const dtdma::TridiagonalBatch& original,
+    dtdma::PreparedOperatorBatch& prepared) {
+  const std::vector<dtdma::Scalar> prepared_lower(
+      prepared.prepared_lower().begin(), prepared.prepared_lower().end());
+  const std::vector<dtdma::Scalar> prepared_diagonal(
+      prepared.prepared_diagonal().begin(),
+      prepared.prepared_diagonal().end());
+  const std::vector<dtdma::Scalar> prepared_upper(
+      prepared.prepared_upper().begin(), prepared.prepared_upper().end());
+
+  dtdma::TridiagonalBatch preparation_original = original;
+  prepared = dtdma::prepare_operator(std::move(preparation_original));
+  std::copy(prepared_lower.begin(), prepared_lower.end(),
+            prepared.prepared_lower().begin());
+  std::copy(prepared_diagonal.begin(), prepared_diagonal.end(),
+            prepared.prepared_diagonal().begin());
+  std::copy(prepared_upper.begin(), prepared_upper.end(),
+            prepared.prepared_upper().begin());
+}
+
+}  // namespace
 
 TEST_CASE("An RHS batch mirrors the canonical batch layout") {
   dtdma::RhsBatch working(4, 3);
@@ -89,8 +117,9 @@ TEST_CASE("Forward RHS reduction matches a complete hand calculation") {
     prepared.prepared_diagonal(row, 0) = prepared_diagonal[row];
   }
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
 
   CHECK(working.rhs(0, 0) == expected_rhs[0]);
   CHECK(working.rhs(1, 0) == expected_rhs[1]);
@@ -127,8 +156,9 @@ TEST_CASE("Forward RHS reduction keeps varying batch systems independent") {
     prepared.prepared_diagonal(row, 1) = diagonal_1[row];
   }
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
 
   CHECK(working.rhs(0, 0) == 1.0F);
   CHECK(working.rhs(1, 0) == 2.0F);
@@ -151,8 +181,9 @@ TEST_CASE("Forward RHS reduction supports the minimum row count") {
   input.rhs(2, 0) = 10.0F;
   prepared.prepared_diagonal(1, 0) = 8.0F;
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
 
   CHECK(working.rhs(0, 0) == 3.0F);
   CHECK(working.rhs(1, 0) == 6.0F);
@@ -168,7 +199,7 @@ TEST_CASE("Forward RHS reduction rejects unsupported or incompatible batches") {
       dtdma::initialize_reduced_rhs(too_short_input, too_short_working),
       std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_forward(
-                      too_short, too_short_prepared, too_short_working),
+                      too_short_prepared, too_short_working),
                   std::invalid_argument);
 
   const dtdma::TridiagonalBatch original(4, 2);
@@ -187,16 +218,16 @@ TEST_CASE("Forward RHS reduction rejects unsupported or incompatible batches") {
       dtdma::initialize_reduced_rhs(input, wrong_working_batch),
       std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_forward(
-                      original, wrong_prepared_rows, working),
+                      wrong_prepared_rows, working),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_forward(
-                      original, wrong_prepared_batch, working),
+                      wrong_prepared_batch, working),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_forward(
-                      original, prepared, wrong_working_rows),
+                      prepared, wrong_working_rows),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_forward(
-                      original, prepared, wrong_working_batch),
+                      prepared, wrong_working_batch),
                   std::invalid_argument);
 }
 
@@ -233,9 +264,10 @@ TEST_CASE("Complete RHS reduction preserves the original and prepared batches") 
   const std::vector<dtdma::Scalar> prepared_upper(
       prepared.prepared_upper().begin(), prepared.prepared_upper().end());
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
-  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
+  dtdma::reduce_rhs_backward(prepared, working);
 
   CHECK(std::vector<dtdma::Scalar>(original.lower().begin(),
                                    original.lower().end()) == original_lower);
@@ -287,8 +319,9 @@ TEST_CASE("Forward RHS reduction agrees with the active CaNS reference fixture")
     prepared.prepared_diagonal(row, 0) = prepared_diagonal[row];
   }
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
 
   CHECK(working.rhs(0, 0) ==
         Catch::Approx(cans_reduced_rhs[0]).margin(cans_tolerance));
@@ -333,11 +366,12 @@ TEST_CASE("Backward RHS reduction matches a complete hand calculation") {
     prepared.prepared_diagonal(row, 0) = prepared_diagonal[row];
   }
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
   const dtdma::Scalar forward_penultimate = working.rhs(3, 0);
   const dtdma::Scalar forward_last = working.rhs(4, 0);
-  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::reduce_rhs_backward(prepared, working);
 
   CHECK(working.rhs(0, 0) ==
         Catch::Approx(expected_rhs[0]).margin(1.0e-5F));
@@ -382,9 +416,10 @@ TEST_CASE("Backward RHS reduction keeps varying batch systems independent") {
     prepared.prepared_diagonal(row, 1) = diagonal_1[row];
   }
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
-  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
+  dtdma::reduce_rhs_backward(prepared, working);
 
   CHECK(working.rhs(0, 0) == Catch::Approx(1.41F));
   CHECK(working.rhs(1, 0) == Catch::Approx(-0.82F));
@@ -408,9 +443,10 @@ TEST_CASE("Backward RHS reduction updates only row zero for three rows") {
   input.rhs(2, 0) = 10.0F;
   prepared.prepared_diagonal(1, 0) = 8.0F;
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
-  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
+  dtdma::reduce_rhs_backward(prepared, working);
 
   CHECK(working.rhs(0, 0) == 1.5F);
   CHECK(working.rhs(1, 0) == 6.0F);
@@ -422,7 +458,7 @@ TEST_CASE("Backward RHS reduction rejects unsupported or incompatible batches") 
   dtdma::PreparedOperatorBatch too_short_prepared(2, 1);
   dtdma::RhsBatch too_short_working(2, 1);
   CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
-                      too_short, too_short_prepared, too_short_working),
+                      too_short_prepared, too_short_working),
                   std::invalid_argument);
 
   const dtdma::TridiagonalBatch original(4, 2);
@@ -435,16 +471,16 @@ TEST_CASE("Backward RHS reduction rejects unsupported or incompatible batches") 
   dtdma::RhsBatch wrong_working_batch(4, 3);
 
   CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
-                      original, wrong_prepared_rows, working),
+                      wrong_prepared_rows, working),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
-                      original, wrong_prepared_batch, working),
+                      wrong_prepared_batch, working),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
-                      original, prepared, wrong_working_rows),
+                      prepared, wrong_working_rows),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reduce_rhs_backward(
-                      original, prepared, wrong_working_batch),
+                      prepared, wrong_working_batch),
                   std::invalid_argument);
 }
 
@@ -544,9 +580,10 @@ TEST_CASE("Complete RHS reduction agrees with the active CaNS reference fixture"
     prepared.prepared_diagonal(row, 0) = prepared_diagonal[row];
   }
 
+  adopt_retained_offdiagonals(original, prepared);
   dtdma::initialize_reduced_rhs(input, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
-  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
+  dtdma::reduce_rhs_backward(prepared, working);
   dtdma::extract_reduced_rhs_endpoints(working, endpoints);
 
   CHECK(working.rhs(0, 0) ==

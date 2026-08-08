@@ -11,6 +11,8 @@ namespace dtdma::detail {
 
 class SharedBands {
  public:
+  SharedBands() = default;
+
   explicit SharedBands(const std::size_t row_count)
       : row_count_(checked_row_count(row_count)),
         lower_(row_count),
@@ -56,7 +58,7 @@ class SharedBands {
     return row;
   }
 
-  std::size_t row_count_;
+  std::size_t row_count_{};
   std::vector<Scalar> lower_;
   std::vector<Scalar> upper_;
 };

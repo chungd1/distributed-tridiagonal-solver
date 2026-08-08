@@ -1,8 +1,8 @@
 #pragma once
 
 #include "dtdma/detail/shared_bands.hpp"
+#include "dtdma/prepared_operator_shared.hpp"
 #include "dtdma/scalar.hpp"
-#include "dtdma/shared_prepared_operator.hpp"
 
 #include <cstddef>
 #include <span>
@@ -13,7 +13,7 @@ namespace dtdma {
 
 class TridiagonalShared {
  public:
-  using PreparedOperator = SharedPreparedOperator;
+  using PreparedOperator = PreparedOperatorShared;
   using ReducedOperator = TridiagonalShared;
 
   explicit TridiagonalShared(const std::size_t row_count)
@@ -91,6 +91,9 @@ class TridiagonalShared {
     }
     return row;
   }
+
+  friend PreparedOperatorShared prepare_operator(
+      TridiagonalShared&& original);
 
   detail::SharedBands storage_;
   std::vector<Scalar> diagonal_;

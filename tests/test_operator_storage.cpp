@@ -3,9 +3,10 @@
 #include "dtdma/batched_thomas_solver.hpp"
 #include "dtdma/forward_coefficient_preparation.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
+#include "dtdma/prepare_operator.hpp"
 #include "dtdma/endpoint_batch.hpp"
 #include "dtdma/rhs_batch.hpp"
-#include "dtdma/shared_prepared_operator.hpp"
+#include "dtdma/prepared_operator_shared.hpp"
 #include "dtdma/tridiagonal_shared.hpp"
 #include "dtdma/tridiagonal_shifted_diagonal.hpp"
 #include "dtdma/single_partition_reconstruction.hpp"
@@ -21,6 +22,7 @@
 #include <array>
 #include <cstddef>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -81,15 +83,62 @@ dtdma::TridiagonalBatch materialize_fully_batched(
   return result;
 }
 
-inline dtdma::SharedPreparedOperator make_prepared(
+inline dtdma::PreparedOperatorShared make_low_level_prepared(
     const dtdma::TridiagonalShared& original) {
-  return dtdma::SharedPreparedOperator(original.row_count());
+  return dtdma::PreparedOperatorShared(original.row_count());
 }
 
 template <typename OriginalOperator>
-auto make_prepared(const OriginalOperator& original) {
-  return typename OriginalOperator::PreparedOperator(original.row_count(),
-                                                      original.system_count());
+auto make_low_level_prepared(const OriginalOperator& original) {
+  return typename OriginalOperator::PreparedOperator(
+      original.row_count(), original.system_count());
+}
+
+template <typename OriginalOperator>
+void check_consuming_preparation(OriginalOperator original) {
+  const std::vector<dtdma::Scalar> retained_lower(
+      original.lower().begin(), original.lower().end());
+  const std::vector<dtdma::Scalar> retained_upper(
+      original.upper().begin(), original.upper().end());
+
+  OriginalOperator low_level_original = original;
+  auto low_level_prepared = make_low_level_prepared(low_level_original);
+  CHECK(low_level_prepared.lower().empty());
+  CHECK(low_level_prepared.upper().empty());
+  dtdma::prepare_forward_coefficients(low_level_original,
+                                      low_level_prepared);
+  dtdma::prepare_backward_coefficients(low_level_original,
+                                       low_level_prepared);
+  CHECK(low_level_prepared.lower().empty());
+  CHECK(low_level_prepared.upper().empty());
+
+  auto persistent = dtdma::prepare_operator(std::move(original));
+
+  CHECK_FALSE(persistent.lower().empty());
+  CHECK_FALSE(persistent.upper().empty());
+  CHECK(persistent.lower(0, 0) == retained_lower.front());
+  CHECK(persistent.upper(0, 0) == retained_upper.front());
+  CHECK(std::vector<dtdma::Scalar>(persistent.lower().begin(),
+                                   persistent.lower().end()) ==
+        retained_lower);
+  CHECK(std::vector<dtdma::Scalar>(persistent.upper().begin(),
+                                   persistent.upper().end()) ==
+        retained_upper);
+  CHECK(std::vector<dtdma::Scalar>(persistent.prepared_lower().begin(),
+                                   persistent.prepared_lower().end()) ==
+        std::vector<dtdma::Scalar>(
+            low_level_prepared.prepared_lower().begin(),
+            low_level_prepared.prepared_lower().end()));
+  CHECK(std::vector<dtdma::Scalar>(persistent.prepared_diagonal().begin(),
+                                   persistent.prepared_diagonal().end()) ==
+        std::vector<dtdma::Scalar>(
+            low_level_prepared.prepared_diagonal().begin(),
+            low_level_prepared.prepared_diagonal().end()));
+  CHECK(std::vector<dtdma::Scalar>(persistent.prepared_upper().begin(),
+                                   persistent.prepared_upper().end()) ==
+        std::vector<dtdma::Scalar>(
+            low_level_prepared.prepared_upper().begin(),
+            low_level_prepared.prepared_upper().end()));
 }
 
 inline dtdma::TridiagonalShared make_reduced(
@@ -114,9 +163,9 @@ PipelineSnapshot run_single_partition_pipeline(
 
   const std::size_t row_count = original.row_count();
   const std::size_t batch_size = input_rhs.batch_size();
-  PreparedOperator prepared = make_prepared(original);
-  dtdma::prepare_forward_coefficients(original, prepared);
-  dtdma::prepare_backward_coefficients(original, prepared);
+  OriginalOperator preparation_original = original;
+  PreparedOperator prepared =
+      dtdma::prepare_operator(std::move(preparation_original));
 
   PipelineSnapshot snapshot;
   snapshot.prepared_physical_element_count = prepared.element_count();
@@ -133,8 +182,8 @@ PipelineSnapshot run_single_partition_pipeline(
 
   dtdma::RhsBatch working(row_count, batch_size);
   dtdma::initialize_reduced_rhs(input_rhs, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
-  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
+  dtdma::reduce_rhs_backward(prepared, working);
   snapshot.reduced_rhs.assign(working.rhs().begin(), working.rhs().end());
 
   dtdma::EndpointBatch endpoints(batch_size);
@@ -142,7 +191,7 @@ PipelineSnapshot run_single_partition_pipeline(
   ReducedOperator reduced = make_reduced(original, 2);
   dtdma::RhsBatch reduced_rhs(2, batch_size);
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced, reduced_rhs);
+      prepared, working, endpoints, reduced, reduced_rhs);
   snapshot.reduced_coefficient_element_count = reduced.lower().size();
   snapshot.reduced_rhs_element_count = reduced_rhs.element_count();
   for (std::size_t row = 0; row < 2; ++row) {
@@ -193,14 +242,14 @@ std::vector<dtdma::Scalar> solve_with_prepared(
   using ReducedOperator = typename OriginalOperator::ReducedOperator;
   dtdma::RhsBatch working(original.row_count(), input_rhs.batch_size());
   dtdma::initialize_reduced_rhs(input_rhs, working);
-  dtdma::reduce_rhs_forward(original, prepared, working);
-  dtdma::reduce_rhs_backward(original, prepared, working);
+  dtdma::reduce_rhs_forward(prepared, working);
+  dtdma::reduce_rhs_backward(prepared, working);
   dtdma::EndpointBatch endpoints(input_rhs.batch_size());
   dtdma::extract_reduced_rhs_endpoints(working, endpoints);
   ReducedOperator reduced = make_reduced(original, 2);
   dtdma::RhsBatch reduced_rhs(2, input_rhs.batch_size());
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced, reduced_rhs);
+      prepared, working, endpoints, reduced, reduced_rhs);
   dtdma::batched_thomas_solve(reduced, reduced_rhs);
   dtdma::recover_single_partition_endpoints(reduced, reduced_rhs, endpoints);
   dtdma::reconstruct_single_partition(prepared, working, endpoints);
@@ -235,6 +284,66 @@ std::vector<dtdma::Scalar> make_exact(const std::size_t row_count,
 }
 
 }  // namespace
+
+TEST_CASE("Consuming preparation matches the low-level preparation passes") {
+  constexpr std::size_t row_count = 5;
+  constexpr std::size_t system_count = 2;
+
+  SECTION("shared operator") {
+    dtdma::TridiagonalShared original(row_count);
+    for (std::size_t row = 0; row < row_count; ++row) {
+      original.lower(row) = row == 0 ? 0.0F : -0.5F - 0.1F * row;
+      original.diagonal(row) = 5.0F + 0.25F * row;
+      original.upper(row) =
+          row + 1 == row_count ? 0.0F : -0.25F + 0.05F * row;
+    }
+    check_consuming_preparation(std::move(original));
+  }
+
+  SECTION("shifted diagonal operator") {
+    dtdma::TridiagonalShiftedDiagonal original(row_count, system_count);
+    original.shift(0) = 0.25F;
+    original.shift(1) = 0.75F;
+    for (std::size_t row = 0; row < row_count; ++row) {
+      original.lower(row) = row == 0 ? 0.0F : -0.6F - 0.05F * row;
+      original.base_diagonal(row) = 5.5F + 0.2F * row;
+      original.upper(row) =
+          row + 1 == row_count ? 0.0F : -0.3F + 0.025F * row;
+    }
+    check_consuming_preparation(std::move(original));
+  }
+
+  SECTION("system diagonal operator") {
+    dtdma::TridiagonalSystemDiagonal original(row_count, system_count);
+    for (std::size_t row = 0; row < row_count; ++row) {
+      original.lower(row) = row == 0 ? 0.0F : -0.7F - 0.04F * row;
+      original.upper(row) =
+          row + 1 == row_count ? 0.0F : -0.2F + 0.03F * row;
+      for (std::size_t system = 0; system < system_count; ++system) {
+        original.diagonal(row, system) =
+            5.75F + 0.2F * row + 0.35F * system;
+      }
+    }
+    check_consuming_preparation(std::move(original));
+  }
+
+  SECTION("fully batched operator") {
+    dtdma::TridiagonalBatch original(row_count, system_count);
+    for (std::size_t row = 0; row < row_count; ++row) {
+      for (std::size_t system = 0; system < system_count; ++system) {
+        original.lower(row, system) =
+            row == 0 ? 0.0F : -0.5F - 0.08F * row - 0.03F * system;
+        original.diagonal(row, system) =
+            6.0F + 0.2F * row + 0.4F * system;
+        original.upper(row, system) =
+            row + 1 == row_count
+                ? 0.0F
+                : -0.25F + 0.02F * row - 0.04F * system;
+      }
+    }
+    check_consuming_preparation(std::move(original));
+  }
+}
 
 TEST_CASE("Shared coefficient storage remains shared through every solve stage") {
   constexpr std::size_t row_count = 13;
@@ -434,9 +543,9 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
   construct_rhs(shared_a, input_a, exact_a);
   construct_rhs(shared_b, input_b, exact_b);
 
-  dtdma::SharedPreparedOperator shared_prepared(row_count);
-  dtdma::prepare_forward_coefficients(shared_a, shared_prepared);
-  dtdma::prepare_backward_coefficients(shared_a, shared_prepared);
+  dtdma::TridiagonalShared shared_preparation_source = shared_a;
+  dtdma::PreparedOperatorShared shared_prepared =
+      dtdma::prepare_operator(std::move(shared_preparation_source));
   const std::vector<dtdma::Scalar> shared_lower(
       shared_prepared.prepared_lower().begin(),
       shared_prepared.prepared_lower().end());
@@ -478,9 +587,33 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
   CHECK(std::equal(shared_upper.begin(), shared_upper.end(),
                    shared_prepared.prepared_upper().begin()));
 
-  dtdma::PreparedOperatorBatch full_prepared(row_count, batch_size);
-  dtdma::prepare_forward_coefficients(full_a, full_prepared);
-  dtdma::prepare_backward_coefficients(full_a, full_prepared);
+  constexpr std::size_t other_batch_size = 1;
+  auto exact_c = make_exact(row_count, other_batch_size);
+  for (auto& value : exact_c) {
+    value = -3.0F + 1.25F * value;
+  }
+  dtdma::RhsBatch input_c(row_count, other_batch_size);
+  construct_rhs(shared_a, input_c, exact_c);
+  auto shared_reference_c =
+      materialize_fully_batched(shared_a, other_batch_size);
+  dtdma::RhsBatch shared_reference_rhs_c = input_c;
+  dtdma::batched_thomas_solve(shared_reference_c, shared_reference_rhs_c);
+  const std::vector<dtdma::Scalar> shared_result_c =
+      solve_with_prepared(shared_a, input_c, shared_prepared);
+  check_values(shared_result_c, exact_c);
+  check_values(shared_result_c,
+               {shared_reference_rhs_c.rhs().begin(),
+                shared_reference_rhs_c.rhs().end()});
+  CHECK(std::equal(shared_lower.begin(), shared_lower.end(),
+                   shared_prepared.prepared_lower().begin()));
+  CHECK(std::equal(shared_diagonal.begin(), shared_diagonal.end(),
+                   shared_prepared.prepared_diagonal().begin()));
+  CHECK(std::equal(shared_upper.begin(), shared_upper.end(),
+                   shared_prepared.prepared_upper().begin()));
+
+  dtdma::TridiagonalBatch full_preparation_source = full_a;
+  dtdma::PreparedOperatorBatch full_prepared =
+      dtdma::prepare_operator(std::move(full_preparation_source));
   const std::vector<dtdma::Scalar> full_lower(
       full_prepared.prepared_lower().begin(),
       full_prepared.prepared_lower().end());

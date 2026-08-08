@@ -20,7 +20,7 @@ inline void prepare_forward_coefficients(const OriginalOperator& original,
       prepared.storage_system_count() !=
           detail::storage_system_count(original)) {
     throw std::invalid_argument(
-        "original and prepared batch dimensions must match");
+        "original and prepared coefficient dimensions must match");
   }
 
   for (std::size_t storage_system = 0;

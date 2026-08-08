@@ -3,6 +3,7 @@
 #include "dtdma/batched_thomas_solver.hpp"
 #include "dtdma/forward_coefficient_preparation.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
+#include "dtdma/prepare_operator.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
 #include "dtdma/rhs_batch.hpp"
 #include "dtdma/endpoint_batch.hpp"
@@ -66,16 +67,12 @@ ReducedSystemFixture assemble_reduced_system_for_test(
       }
     }
 
-    prepared.emplace_back(local_row_count, batch_size);
+    prepared.push_back(dtdma::prepare_operator(std::move(local_original)));
     working.emplace_back(local_row_count, batch_size);
     endpoints.emplace_back(batch_size);
-    dtdma::prepare_forward_coefficients(local_original, prepared.back());
-    dtdma::prepare_backward_coefficients(local_original, prepared.back());
     dtdma::initialize_reduced_rhs(local_input, working.back());
-    dtdma::reduce_rhs_forward(local_original, prepared.back(),
-                              working.back());
-    dtdma::reduce_rhs_backward(local_original, prepared.back(),
-                               working.back());
+    dtdma::reduce_rhs_forward(prepared.back(), working.back());
+    dtdma::reduce_rhs_backward(prepared.back(), working.back());
     dtdma::extract_reduced_rhs_endpoints(working.back(), endpoints.back());
   }
 
@@ -253,7 +250,7 @@ TEST_CASE("One virtual partition matches single-partition assembly") {
   dtdma::RhsBatch virtual_reduced_rhs(2, 1);
 
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared[0], working[0], endpoints[0], single_reduced,
+      prepared[0], working[0], endpoints[0], single_reduced,
       single_reduced_rhs);
   dtdma::assemble_virtual_reduced_system(
       partitioning,

@@ -2,7 +2,7 @@
 
 #include "dtdma/detail/shared_bands.hpp"
 #include "dtdma/indexing.hpp"
-#include "dtdma/prepared_operator_batch.hpp"
+#include "dtdma/prepared_operator_batch_shared_offdiagonals.hpp"
 #include "dtdma/scalar.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
 
@@ -16,7 +16,7 @@ namespace dtdma {
 
 class TridiagonalSystemDiagonal {
  public:
-  using PreparedOperator = PreparedOperatorBatch;
+  using PreparedOperator = PreparedOperatorBatchSharedOffdiagonals;
   using ReducedOperator = TridiagonalBatch;
 
   TridiagonalSystemDiagonal(const std::size_t row_count,
@@ -125,6 +125,9 @@ class TridiagonalSystemDiagonal {
       throw std::out_of_range("system index is out of range");
     }
   }
+
+  friend PreparedOperatorBatchSharedOffdiagonals prepare_operator(
+      TridiagonalSystemDiagonal&& original);
 
   detail::SharedBands storage_;
   std::size_t system_count_;

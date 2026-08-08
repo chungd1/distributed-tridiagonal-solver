@@ -5,10 +5,11 @@
 #include "dtdma/batched_thomas_solver.hpp"
 #include "dtdma/forward_coefficient_preparation.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
+#include "dtdma/prepare_operator.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
 #include "dtdma/rhs_batch.hpp"
 #include "dtdma/endpoint_batch.hpp"
-#include "dtdma/shared_prepared_operator.hpp"
+#include "dtdma/prepared_operator_shared.hpp"
 #include "dtdma/tridiagonal_shared.hpp"
 #include "dtdma/tridiagonal_shifted_diagonal.hpp"
 #include "dtdma/single_partition_reconstruction.hpp"
@@ -20,6 +21,7 @@
 #include <cstddef>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace dtdma {
@@ -93,26 +95,6 @@ inline TridiagonalBatch make_local_operator(
   return local;
 }
 
-inline SharedPreparedOperator make_prepared_operator(
-    const TridiagonalShared& original) {
-  return SharedPreparedOperator(original.row_count());
-}
-
-inline PreparedOperatorBatch make_prepared_operator(
-    const TridiagonalShiftedDiagonal& original) {
-  return PreparedOperatorBatch(original.row_count(), original.system_count());
-}
-
-inline PreparedOperatorBatch make_prepared_operator(
-    const TridiagonalSystemDiagonal& original) {
-  return PreparedOperatorBatch(original.row_count(), original.system_count());
-}
-
-inline PreparedOperatorBatch make_prepared_operator(
-    const TridiagonalBatch& original) {
-  return PreparedOperatorBatch(original.row_count(), original.system_count());
-}
-
 inline TridiagonalShared make_reduced_operator(
     const TridiagonalShared&,
     const std::size_t row_count) {
@@ -174,7 +156,7 @@ inline void solve_virtual_system(
         original, partition.begin_row, local_row_count);
 
     prepared_partitions.push_back(
-        detail::make_prepared_operator(local_original));
+        prepare_operator(std::move(local_original)));
     working_partitions.emplace_back(local_row_count, batch_size);
     partition_endpoints.emplace_back(batch_size);
 
@@ -188,14 +170,10 @@ inline void solve_virtual_system(
       }
     }
 
-    prepare_forward_coefficients(local_original,
-                                 prepared_partitions.back());
-    prepare_backward_coefficients(local_original,
-                                  prepared_partitions.back());
     initialize_reduced_rhs(local_input, working_partitions.back());
-    reduce_rhs_forward(local_original, prepared_partitions.back(),
+    reduce_rhs_forward(prepared_partitions.back(),
                        working_partitions.back());
-    reduce_rhs_backward(local_original, prepared_partitions.back(),
+    reduce_rhs_backward(prepared_partitions.back(),
                         working_partitions.back());
     extract_reduced_rhs_endpoints(working_partitions.back(),
                                   partition_endpoints.back());
