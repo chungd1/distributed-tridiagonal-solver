@@ -9,7 +9,8 @@
 
 namespace dtdma {
 
-inline void initialize_reduced_rhs(const TridiagonalBatch& original,
+template <typename OriginalOperator>
+inline void initialize_reduced_rhs(const OriginalOperator& original,
                                    ReducedRhsBatch& working) {
   if (original.row_count() < 3) {
     throw std::invalid_argument("RHS reduction requires at least three rows");
@@ -20,13 +21,16 @@ inline void initialize_reduced_rhs(const TridiagonalBatch& original,
         "original and RHS working batch dimensions must match");
   }
 
-  for (std::size_t index = 0; index < original.element_count(); ++index) {
-    working.rhs()[index] = original.rhs()[index];
+  for (std::size_t row = 0; row < original.row_count(); ++row) {
+    for (std::size_t system = 0; system < original.batch_size(); ++system) {
+      working.rhs(row, system) = original.rhs(row, system);
+    }
   }
 }
 
-inline void reduce_rhs_forward(const TridiagonalBatch& original,
-                               const PreparedOperatorBatch& prepared,
+template <typename OriginalOperator, typename PreparedOperator>
+inline void reduce_rhs_forward(const OriginalOperator& original,
+                               const PreparedOperator& prepared,
                                ReducedRhsBatch& working) {
   if (original.row_count() < 3) {
     throw std::invalid_argument("RHS reduction requires at least three rows");

@@ -11,11 +11,12 @@
 
 namespace dtdma {
 
+template <typename PreparedOperator, typename ReducedOperator>
 inline void assemble_virtual_reduced_system(
     const VirtualPartitioning& partitioning,
-    const std::span<const PreparedOperatorBatch> prepared_partitions,
+    const std::span<const PreparedOperator> prepared_partitions,
     const std::span<const ReducedRhsEndpoints> reduced_rhs_endpoints,
-    TridiagonalBatch& reduced_system) {
+    ReducedOperator& reduced_system) {
   const std::size_t partition_count = partitioning.partition_count();
   if (prepared_partitions.size() != partition_count ||
       reduced_rhs_endpoints.size() != partition_count) {
@@ -45,37 +46,50 @@ inline void assemble_virtual_reduced_system(
     const std::size_t last_local_row =
         prepared_partitions[rank].row_count() - 1;
 
+    for (std::size_t storage_system = 0;
+         storage_system <
+             prepared_partitions[rank].storage_system_count();
+         ++storage_system) {
+      reduced_system.lower(first_reduced_row, storage_system) =
+          prepared_partitions[rank].prepared_lower(0, storage_system);
+      reduced_system.diagonal(first_reduced_row, storage_system) =
+          prepared_partitions[rank].prepared_diagonal(0, storage_system);
+      reduced_system.upper(first_reduced_row, storage_system) =
+          prepared_partitions[rank].prepared_upper(0, storage_system);
+
+      reduced_system.lower(last_reduced_row, storage_system) =
+          prepared_partitions[rank].prepared_lower(last_local_row,
+                                                   storage_system);
+      reduced_system.diagonal(last_reduced_row, storage_system) =
+          prepared_partitions[rank].prepared_diagonal(last_local_row,
+                                                      storage_system);
+      reduced_system.upper(last_reduced_row, storage_system) =
+          prepared_partitions[rank].prepared_upper(last_local_row,
+                                                   storage_system);
+    }
+
     for (std::size_t system = 0; system < batch_size; ++system) {
-      reduced_system.lower(first_reduced_row, system) =
-          prepared_partitions[rank].prepared_lower(0, system);
-      reduced_system.diagonal(first_reduced_row, system) =
-          prepared_partitions[rank].prepared_diagonal(0, system);
-      reduced_system.upper(first_reduced_row, system) =
-          prepared_partitions[rank].prepared_upper(0, system);
       reduced_system.rhs(first_reduced_row, system) =
           reduced_rhs_endpoints[rank].endpoint(system, 0);
-
-      reduced_system.lower(last_reduced_row, system) =
-          prepared_partitions[rank].prepared_lower(last_local_row, system);
-      reduced_system.diagonal(last_reduced_row, system) =
-          prepared_partitions[rank].prepared_diagonal(last_local_row, system);
-      reduced_system.upper(last_reduced_row, system) =
-          prepared_partitions[rank].prepared_upper(last_local_row, system);
       reduced_system.rhs(last_reduced_row, system) =
           reduced_rhs_endpoints[rank].endpoint(system, 1);
     }
   }
 
-  for (std::size_t system = 0; system < batch_size; ++system) {
+  for (std::size_t storage_system = 0;
+       storage_system <
+           prepared_partitions.front().storage_system_count();
+       ++storage_system) {
     const std::size_t final_reduced_row = 2 * partition_count - 1;
-    reduced_system.lower(0, system) = 0.0F;
-    reduced_system.upper(final_reduced_row, system) = 0.0F;
+    reduced_system.lower(0, storage_system) = 0.0F;
+    reduced_system.upper(final_reduced_row, storage_system) = 0.0F;
   }
 }
 
+template <typename ReducedOperator>
 inline void recover_virtual_reduced_endpoints(
     const VirtualPartitioning& partitioning,
-    const TridiagonalBatch& solved_reduced_system,
+    const ReducedOperator& solved_reduced_system,
     const std::span<ReducedRhsEndpoints> solved_endpoints) {
   const std::size_t partition_count = partitioning.partition_count();
   if (solved_reduced_system.row_count() != 2 * partition_count ||

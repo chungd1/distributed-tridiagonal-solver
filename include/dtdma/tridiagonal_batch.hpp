@@ -11,8 +11,13 @@
 
 namespace dtdma {
 
+class PreparedOperatorBatch;
+
 class TridiagonalBatch {
  public:
+  using PreparedOperator = PreparedOperatorBatch;
+  using ReducedOperator = TridiagonalBatch;
+
   TridiagonalBatch(const std::size_t row_count,
                    const std::size_t batch_size)
       : row_count_(row_count),

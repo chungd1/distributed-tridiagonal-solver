@@ -72,7 +72,9 @@ dtdma::TridiagonalBatch assemble_reduced_system_for_test(
 
   dtdma::TridiagonalBatch reduced_system(2 * partition_count, batch_size);
   dtdma::assemble_virtual_reduced_system(
-      partitioning, prepared, endpoints, reduced_system);
+      partitioning,
+      std::span<const dtdma::PreparedOperatorBatch>(prepared),
+      endpoints, reduced_system);
   return reduced_system;
 }
 
@@ -176,7 +178,9 @@ TEST_CASE("Virtual reduced assembly follows rank endpoint ordering") {
   dtdma::TridiagonalBatch reduced_system(4, 1);
 
   dtdma::assemble_virtual_reduced_system(
-      partitioning, prepared, endpoints, reduced_system);
+      partitioning,
+      std::span<const dtdma::PreparedOperatorBatch>(prepared),
+      endpoints, reduced_system);
 
   const std::array<dtdma::Scalar, 4> expected_lower{0.0F, 4.0F, 6.0F,
                                                     8.0F};
@@ -238,7 +242,9 @@ TEST_CASE("One virtual partition matches single-partition assembly") {
   dtdma::assemble_single_partition_reduced_system(
       original, prepared[0], working[0], endpoints[0], single_reduced);
   dtdma::assemble_virtual_reduced_system(
-      partitioning, prepared, endpoints, virtual_reduced);
+      partitioning,
+      std::span<const dtdma::PreparedOperatorBatch>(prepared),
+      endpoints, virtual_reduced);
 
   for (std::size_t row = 0; row < 2; ++row) {
     CHECK(virtual_reduced.lower(row, 0) == single_reduced.lower(row, 0));
@@ -553,11 +559,15 @@ TEST_CASE("Virtual reduced operations reject incompatible dimensions") {
                       endpoints, reduced),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_virtual_reduced_system(
-                      partitioning, prepared, endpoints,
+                      partitioning,
+                      std::span<const dtdma::PreparedOperatorBatch>(prepared),
+                      endpoints,
                       wrong_reduced_rows),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_virtual_reduced_system(
-                      partitioning, prepared, endpoints,
+                      partitioning,
+                      std::span<const dtdma::PreparedOperatorBatch>(prepared),
+                      endpoints,
                       wrong_reduced_batch),
                   std::invalid_argument);
 

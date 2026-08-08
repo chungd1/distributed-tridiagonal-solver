@@ -9,8 +9,9 @@
 
 namespace dtdma {
 
+template <typename PreparedOperator>
 inline void reconstruct_single_partition(
-    const PreparedOperatorBatch& prepared,
+    const PreparedOperator& prepared,
     ReducedRhsBatch& working,
     const ReducedRhsEndpoints& solved_endpoints) {
   if (prepared.row_count() < 3) {

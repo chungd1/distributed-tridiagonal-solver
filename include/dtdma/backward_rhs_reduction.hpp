@@ -9,8 +9,9 @@
 
 namespace dtdma {
 
-inline void reduce_rhs_backward(const TridiagonalBatch& original,
-                                const PreparedOperatorBatch& prepared,
+template <typename OriginalOperator, typename PreparedOperator>
+inline void reduce_rhs_backward(const OriginalOperator& original,
+                                const PreparedOperator& prepared,
                                 ReducedRhsBatch& working) {
   if (original.row_count() < 3) {
     throw std::invalid_argument("RHS reduction requires at least three rows");

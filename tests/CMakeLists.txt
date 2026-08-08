@@ -43,3 +43,8 @@ add_executable(test_virtual_solve test_virtual_solve.cpp)
 target_link_libraries(test_virtual_solve
                       PRIVATE dtdma Catch2::Catch2WithMain)
 catch_discover_tests(test_virtual_solve)
+
+add_executable(test_operator_storage test_operator_storage.cpp)
+target_link_libraries(test_operator_storage
+                      PRIVATE dtdma Catch2::Catch2WithMain)
+catch_discover_tests(test_operator_storage)
