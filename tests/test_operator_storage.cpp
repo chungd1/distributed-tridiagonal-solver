@@ -408,8 +408,29 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
   const std::vector<dtdma::Scalar> shared_upper(
       shared_prepared.prepared_upper().begin(),
       shared_prepared.prepared_upper().end());
-  check_values(solve_with_prepared(shared_a, shared_prepared), exact_a);
-  check_values(solve_with_prepared(shared_b, shared_prepared), exact_b);
+  auto shared_reference_a = materialize_fully_batched(shared_a);
+  dtdma::batched_thomas_solve(shared_reference_a);
+  const std::vector<dtdma::Scalar> shared_result_a =
+      solve_with_prepared(shared_a, shared_prepared);
+  check_values(shared_result_a, exact_a);
+  check_values(shared_result_a,
+               {shared_reference_a.rhs().begin(),
+                shared_reference_a.rhs().end()});
+  CHECK(std::equal(shared_lower.begin(), shared_lower.end(),
+                   shared_prepared.prepared_lower().begin()));
+  CHECK(std::equal(shared_diagonal.begin(), shared_diagonal.end(),
+                   shared_prepared.prepared_diagonal().begin()));
+  CHECK(std::equal(shared_upper.begin(), shared_upper.end(),
+                   shared_prepared.prepared_upper().begin()));
+
+  auto shared_reference_b = materialize_fully_batched(shared_b);
+  dtdma::batched_thomas_solve(shared_reference_b);
+  const std::vector<dtdma::Scalar> shared_result_b =
+      solve_with_prepared(shared_b, shared_prepared);
+  check_values(shared_result_b, exact_b);
+  check_values(shared_result_b,
+               {shared_reference_b.rhs().begin(),
+                shared_reference_b.rhs().end()});
   CHECK(std::equal(shared_lower.begin(), shared_lower.end(),
                    shared_prepared.prepared_lower().begin()));
   CHECK(std::equal(shared_diagonal.begin(), shared_diagonal.end(),
@@ -429,8 +450,27 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
   const std::vector<dtdma::Scalar> full_upper(
       full_prepared.prepared_upper().begin(),
       full_prepared.prepared_upper().end());
-  check_values(solve_with_prepared(full_a, full_prepared), exact_a);
-  check_values(solve_with_prepared(full_b, full_prepared), exact_b);
+  dtdma::TridiagonalBatch full_reference_a = full_a;
+  dtdma::batched_thomas_solve(full_reference_a);
+  const std::vector<dtdma::Scalar> full_result_a =
+      solve_with_prepared(full_a, full_prepared);
+  check_values(full_result_a, exact_a);
+  check_values(full_result_a,
+               {full_reference_a.rhs().begin(), full_reference_a.rhs().end()});
+  CHECK(std::equal(full_lower.begin(), full_lower.end(),
+                   full_prepared.prepared_lower().begin()));
+  CHECK(std::equal(full_diagonal.begin(), full_diagonal.end(),
+                   full_prepared.prepared_diagonal().begin()));
+  CHECK(std::equal(full_upper.begin(), full_upper.end(),
+                   full_prepared.prepared_upper().begin()));
+
+  dtdma::TridiagonalBatch full_reference_b = full_b;
+  dtdma::batched_thomas_solve(full_reference_b);
+  const std::vector<dtdma::Scalar> full_result_b =
+      solve_with_prepared(full_b, full_prepared);
+  check_values(full_result_b, exact_b);
+  check_values(full_result_b,
+               {full_reference_b.rhs().begin(), full_reference_b.rhs().end()});
   CHECK(std::equal(full_lower.begin(), full_lower.end(),
                    full_prepared.prepared_lower().begin()));
   CHECK(std::equal(full_diagonal.begin(), full_diagonal.end(),

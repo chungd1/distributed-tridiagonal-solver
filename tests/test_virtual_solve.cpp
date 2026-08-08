@@ -20,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -538,6 +539,77 @@ TEST_CASE("Batched virtual solves keep systems independent for every partition c
             Catch::Approx(partition_solutions[0][index]).margin(tolerance));
     }
   }
+}
+
+TEST_CASE("Deterministic random virtual solves match global Thomas") {
+  constexpr std::size_t row_count = 17;
+  constexpr std::size_t batch_size = 3;
+  constexpr dtdma::Scalar tolerance = 1.0e-4F;
+  dtdma::TridiagonalBatch original(row_count, batch_size);
+  std::array<dtdma::Scalar, row_count * batch_size> exact_solution{};
+  std::mt19937 generator(271828U);
+  std::uniform_real_distribution<dtdma::Scalar> coefficient_distribution(
+      -0.75F, 0.75F);
+  std::uniform_real_distribution<dtdma::Scalar> diagonal_margin_distribution(
+      1.0F, 1.5F);
+  std::uniform_real_distribution<dtdma::Scalar> solution_distribution(-3.0F,
+                                                                       3.0F);
+
+  for (std::size_t row = 0; row < row_count; ++row) {
+    for (std::size_t system = 0; system < batch_size; ++system) {
+      const std::size_t index = row * batch_size + system;
+      const dtdma::Scalar lower =
+          row == 0 ? 0.0F : coefficient_distribution(generator);
+      const dtdma::Scalar upper =
+          row + 1 == row_count ? 0.0F
+                               : coefficient_distribution(generator);
+      original.lower(row, system) = lower;
+      original.diagonal(row, system) =
+          std::abs(lower) + std::abs(upper) +
+          diagonal_margin_distribution(generator);
+      original.upper(row, system) = upper;
+      exact_solution[index] = solution_distribution(generator);
+    }
+  }
+  for (std::size_t row = 0; row < row_count; ++row) {
+    for (std::size_t system = 0; system < batch_size; ++system) {
+      const std::size_t index = row * batch_size + system;
+      dtdma::Scalar rhs =
+          original.diagonal(row, system) * exact_solution[index];
+      if (row > 0) {
+        rhs += original.lower(row, system) *
+               exact_solution[(row - 1) * batch_size + system];
+      }
+      if (row + 1 < row_count) {
+        rhs += original.upper(row, system) *
+               exact_solution[(row + 1) * batch_size + system];
+      }
+      original.rhs(row, system) = rhs;
+    }
+  }
+
+  dtdma::TridiagonalBatch global_reference = original;
+  dtdma::batched_thomas_solve(global_reference);
+  dtdma::Scalar maximum_difference = 0.0F;
+  for (std::size_t partition_count = 1; partition_count <= 4;
+       ++partition_count) {
+    const dtdma::VirtualPartitioning partitioning(row_count,
+                                                   partition_count);
+    dtdma::ReducedRhsBatch solution(row_count, batch_size);
+    dtdma::solve_virtual_system(original, partitioning, solution);
+    for (std::size_t row = 0; row < row_count; ++row) {
+      for (std::size_t system = 0; system < batch_size; ++system) {
+        const dtdma::Scalar difference =
+            std::abs(solution.rhs(row, system) -
+                     global_reference.rhs(row, system));
+        maximum_difference = std::max(maximum_difference, difference);
+        CHECK(solution.rhs(row, system) ==
+              Catch::Approx(global_reference.rhs(row, system))
+                  .margin(tolerance));
+      }
+    }
+  }
+  CHECK(maximum_difference <= tolerance);
 }
 
 TEST_CASE("Virtual reduced operations reject incompatible dimensions") {
