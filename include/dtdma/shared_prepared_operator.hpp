@@ -11,16 +11,13 @@ namespace dtdma {
 
 class SharedPreparedOperator {
  public:
-  SharedPreparedOperator(const std::size_t row_count,
-                         const std::size_t batch_size)
+  explicit SharedPreparedOperator(const std::size_t row_count)
       : row_count_(checked_row_count(row_count)),
-        batch_size_(checked_batch_size(batch_size)),
         prepared_lower_(row_count),
         prepared_diagonal_(row_count),
         prepared_upper_(row_count) {}
 
   [[nodiscard]] std::size_t row_count() const noexcept { return row_count_; }
-  [[nodiscard]] std::size_t batch_size() const noexcept { return batch_size_; }
   [[nodiscard]] std::size_t element_count() const noexcept {
     return row_count_;
   }
@@ -29,36 +26,30 @@ class SharedPreparedOperator {
   }
 
   [[nodiscard]] Scalar& prepared_lower(const std::size_t row,
-                                       const std::size_t system) {
-    check_system(system);
+                                       const std::size_t) {
     return prepared_lower_[checked_row(row)];
   }
   [[nodiscard]] const Scalar& prepared_lower(
       const std::size_t row,
-      const std::size_t system) const {
-    check_system(system);
+      const std::size_t) const {
     return prepared_lower_[checked_row(row)];
   }
   [[nodiscard]] Scalar& prepared_diagonal(const std::size_t row,
-                                          const std::size_t system) {
-    check_system(system);
+                                          const std::size_t) {
     return prepared_diagonal_[checked_row(row)];
   }
   [[nodiscard]] const Scalar& prepared_diagonal(
       const std::size_t row,
-      const std::size_t system) const {
-    check_system(system);
+      const std::size_t) const {
     return prepared_diagonal_[checked_row(row)];
   }
   [[nodiscard]] Scalar& prepared_upper(const std::size_t row,
-                                       const std::size_t system) {
-    check_system(system);
+                                       const std::size_t) {
     return prepared_upper_[checked_row(row)];
   }
   [[nodiscard]] const Scalar& prepared_upper(
       const std::size_t row,
-      const std::size_t system) const {
-    check_system(system);
+      const std::size_t) const {
     return prepared_upper_[checked_row(row)];
   }
 
@@ -89,27 +80,13 @@ class SharedPreparedOperator {
     }
     return row_count;
   }
-  [[nodiscard]] static std::size_t checked_batch_size(
-      const std::size_t batch_size) {
-    if (batch_size == 0) {
-      throw std::invalid_argument("batch size must be greater than zero");
-    }
-    return batch_size;
-  }
   [[nodiscard]] std::size_t checked_row(const std::size_t row) const {
     if (row >= row_count_) {
       throw std::out_of_range("row index is out of range");
     }
     return row;
   }
-  void check_system(const std::size_t system) const {
-    if (system >= batch_size_) {
-      throw std::out_of_range("system index is out of range");
-    }
-  }
-
   std::size_t row_count_;
-  std::size_t batch_size_;
   std::vector<Scalar> prepared_lower_;
   std::vector<Scalar> prepared_diagonal_;
   std::vector<Scalar> prepared_upper_;

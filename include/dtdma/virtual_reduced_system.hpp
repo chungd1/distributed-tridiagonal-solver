@@ -1,7 +1,9 @@
 #pragma once
 
+#include "dtdma/detail/coefficient_dimensions.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
-#include "dtdma/reduced_rhs_endpoints.hpp"
+#include "dtdma/rhs_batch.hpp"
+#include "dtdma/endpoint_batch.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
 #include "dtdma/virtual_partitioning.hpp"
 
@@ -15,25 +17,30 @@ template <typename PreparedOperator, typename ReducedOperator>
 inline void assemble_virtual_reduced_system(
     const VirtualPartitioning& partitioning,
     const std::span<const PreparedOperator> prepared_partitions,
-    const std::span<const ReducedRhsEndpoints> reduced_rhs_endpoints,
-    ReducedOperator& reduced_system) {
+    const std::span<const EndpointBatch> reduced_rhs_endpoints,
+    ReducedOperator& reduced_system,
+    RhsBatch& reduced_rhs) {
   const std::size_t partition_count = partitioning.partition_count();
   if (prepared_partitions.size() != partition_count ||
       reduced_rhs_endpoints.size() != partition_count) {
     throw std::invalid_argument(
         "one prepared and endpoint batch is required per partition");
   }
-  if (reduced_system.row_count() != 2 * partition_count) {
+  if (reduced_system.row_count() != 2 * partition_count ||
+      reduced_rhs.row_count() != 2 * partition_count ||
+      !detail::rhs_batch_size_is_compatible(reduced_system,
+                                             reduced_rhs.batch_size())) {
     throw std::invalid_argument(
         "reduced-system row count must be twice the virtual rank count");
   }
 
-  const std::size_t batch_size = reduced_system.batch_size();
+  const std::size_t batch_size = reduced_rhs.batch_size();
   for (std::size_t rank = 0; rank < partition_count; ++rank) {
     const auto partition = partitioning.partition(rank);
     if (prepared_partitions[rank].row_count() !=
             partition.local_row_count ||
-        prepared_partitions[rank].batch_size() != batch_size ||
+        !detail::rhs_batch_size_is_compatible(prepared_partitions[rank],
+                                               batch_size) ||
         reduced_rhs_endpoints[rank].batch_size() != batch_size) {
       throw std::invalid_argument(
           "partition and reduced-system dimensions must match");
@@ -69,9 +76,9 @@ inline void assemble_virtual_reduced_system(
     }
 
     for (std::size_t system = 0; system < batch_size; ++system) {
-      reduced_system.rhs(first_reduced_row, system) =
+      reduced_rhs.rhs(first_reduced_row, system) =
           reduced_rhs_endpoints[rank].endpoint(system, 0);
-      reduced_system.rhs(last_reduced_row, system) =
+      reduced_rhs.rhs(last_reduced_row, system) =
           reduced_rhs_endpoints[rank].endpoint(system, 1);
     }
   }
@@ -90,9 +97,13 @@ template <typename ReducedOperator>
 inline void recover_virtual_reduced_endpoints(
     const VirtualPartitioning& partitioning,
     const ReducedOperator& solved_reduced_system,
-    const std::span<ReducedRhsEndpoints> solved_endpoints) {
+    const RhsBatch& solved_reduced_rhs,
+    const std::span<EndpointBatch> solved_endpoints) {
   const std::size_t partition_count = partitioning.partition_count();
   if (solved_reduced_system.row_count() != 2 * partition_count ||
+      solved_reduced_rhs.row_count() != 2 * partition_count ||
+      !detail::rhs_batch_size_is_compatible(
+          solved_reduced_system, solved_reduced_rhs.batch_size()) ||
       solved_endpoints.size() != partition_count) {
     throw std::invalid_argument(
         "solved reduced system and endpoint partition counts must match");
@@ -100,7 +111,7 @@ inline void recover_virtual_reduced_endpoints(
 
   for (std::size_t rank = 0; rank < partition_count; ++rank) {
     if (solved_endpoints[rank].batch_size() !=
-        solved_reduced_system.batch_size()) {
+        solved_reduced_rhs.batch_size()) {
       throw std::invalid_argument(
           "solved reduced-system and endpoint batch sizes must match");
     }
@@ -108,11 +119,11 @@ inline void recover_virtual_reduced_endpoints(
 
   for (std::size_t rank = 0; rank < partition_count; ++rank) {
     for (std::size_t system = 0;
-         system < solved_reduced_system.batch_size(); ++system) {
+         system < solved_reduced_rhs.batch_size(); ++system) {
       solved_endpoints[rank].endpoint(system, 0) =
-          solved_reduced_system.rhs(2 * rank, system);
+          solved_reduced_rhs.rhs(2 * rank, system);
       solved_endpoints[rank].endpoint(system, 1) =
-          solved_reduced_system.rhs(2 * rank + 1, system);
+          solved_reduced_rhs.rhs(2 * rank + 1, system);
     }
   }
 }

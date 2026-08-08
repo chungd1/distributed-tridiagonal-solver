@@ -4,8 +4,8 @@
 #include "dtdma/forward_coefficient_preparation.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
-#include "dtdma/reduced_rhs_batch.hpp"
-#include "dtdma/reduced_rhs_endpoints.hpp"
+#include "dtdma/rhs_batch.hpp"
+#include "dtdma/endpoint_batch.hpp"
 #include "dtdma/scalar.hpp"
 #include "dtdma/single_partition_reduced_system.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
@@ -23,18 +23,25 @@
 #include <random>
 #include <span>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
 
-dtdma::TridiagonalBatch assemble_reduced_system_for_test(
+struct ReducedSystemFixture {
+  dtdma::TridiagonalBatch coefficients;
+  dtdma::RhsBatch rhs;
+};
+
+ReducedSystemFixture assemble_reduced_system_for_test(
     const dtdma::TridiagonalBatch& original,
+    const dtdma::RhsBatch& input_rhs,
     const dtdma::VirtualPartitioning& partitioning) {
   const std::size_t partition_count = partitioning.partition_count();
-  const std::size_t batch_size = original.batch_size();
+  const std::size_t batch_size = input_rhs.batch_size();
   std::vector<dtdma::PreparedOperatorBatch> prepared;
-  std::vector<dtdma::ReducedRhsBatch> working;
-  std::vector<dtdma::ReducedRhsEndpoints> endpoints;
+  std::vector<dtdma::RhsBatch> working;
+  std::vector<dtdma::EndpointBatch> endpoints;
   prepared.reserve(partition_count);
   working.reserve(partition_count);
   endpoints.reserve(partition_count);
@@ -43,6 +50,7 @@ dtdma::TridiagonalBatch assemble_reduced_system_for_test(
     const auto partition = partitioning.partition(rank);
     const std::size_t local_row_count = partition.local_row_count;
     dtdma::TridiagonalBatch local_original(local_row_count, batch_size);
+    dtdma::RhsBatch local_input(local_row_count, batch_size);
     for (std::size_t local_row = 0; local_row < local_row_count;
          ++local_row) {
       const std::size_t global_row = partition.begin_row + local_row;
@@ -53,8 +61,8 @@ dtdma::TridiagonalBatch assemble_reduced_system_for_test(
             original.diagonal(global_row, system);
         local_original.upper(local_row, system) =
             original.upper(global_row, system);
-        local_original.rhs(local_row, system) =
-            original.rhs(global_row, system);
+        local_input.rhs(local_row, system) =
+            input_rhs.rhs(global_row, system);
       }
     }
 
@@ -63,7 +71,7 @@ dtdma::TridiagonalBatch assemble_reduced_system_for_test(
     endpoints.emplace_back(batch_size);
     dtdma::prepare_forward_coefficients(local_original, prepared.back());
     dtdma::prepare_backward_coefficients(local_original, prepared.back());
-    dtdma::initialize_reduced_rhs(local_original, working.back());
+    dtdma::initialize_reduced_rhs(local_input, working.back());
     dtdma::reduce_rhs_forward(local_original, prepared.back(),
                               working.back());
     dtdma::reduce_rhs_backward(local_original, prepared.back(),
@@ -72,11 +80,12 @@ dtdma::TridiagonalBatch assemble_reduced_system_for_test(
   }
 
   dtdma::TridiagonalBatch reduced_system(2 * partition_count, batch_size);
+  dtdma::RhsBatch reduced_rhs(2 * partition_count, batch_size);
   dtdma::assemble_virtual_reduced_system(
       partitioning,
       std::span<const dtdma::PreparedOperatorBatch>(prepared),
-      endpoints, reduced_system);
-  return reduced_system;
+      endpoints, reduced_system, reduced_rhs);
+  return {std::move(reduced_system), std::move(reduced_rhs)};
 }
 
 }  // namespace
@@ -135,7 +144,7 @@ TEST_CASE("Virtual partitioning rejects unsupported decompositions") {
 TEST_CASE("Virtual reduced assembly follows rank endpoint ordering") {
   const dtdma::VirtualPartitioning partitioning(6, 2);
   std::vector<dtdma::PreparedOperatorBatch> prepared;
-  std::vector<dtdma::ReducedRhsEndpoints> endpoints;
+  std::vector<dtdma::EndpointBatch> endpoints;
   prepared.emplace_back(3, 1);
   prepared.emplace_back(3, 1);
   endpoints.emplace_back(1);
@@ -177,11 +186,12 @@ TEST_CASE("Virtual reduced assembly follows rank endpoint ordering") {
   const std::vector<dtdma::Scalar> endpoint_one(
       endpoints[1].endpoints().begin(), endpoints[1].endpoints().end());
   dtdma::TridiagonalBatch reduced_system(4, 1);
+  dtdma::RhsBatch reduced_rhs(4, 1);
 
   dtdma::assemble_virtual_reduced_system(
       partitioning,
       std::span<const dtdma::PreparedOperatorBatch>(prepared),
-      endpoints, reduced_system);
+      endpoints, reduced_system, reduced_rhs);
 
   const std::array<dtdma::Scalar, 4> expected_lower{0.0F, 4.0F, 6.0F,
                                                     8.0F};
@@ -195,7 +205,7 @@ TEST_CASE("Virtual reduced assembly follows rank endpoint ordering") {
     CHECK(reduced_system.lower(row, 0) == expected_lower[row]);
     CHECK(reduced_system.diagonal(row, 0) == expected_diagonal[row]);
     CHECK(reduced_system.upper(row, 0) == expected_upper[row]);
-    CHECK(reduced_system.rhs(row, 0) == expected_rhs[row]);
+    CHECK(reduced_rhs.rhs(row, 0) == expected_rhs[row]);
   }
   for (std::size_t rank = 0; rank < 2; ++rank) {
     CHECK(std::vector<dtdma::Scalar>(
@@ -223,8 +233,8 @@ TEST_CASE("One virtual partition matches single-partition assembly") {
   const dtdma::VirtualPartitioning partitioning(5, 1);
   dtdma::TridiagonalBatch original(5, 1);
   std::vector<dtdma::PreparedOperatorBatch> prepared;
-  std::vector<dtdma::ReducedRhsBatch> working;
-  std::vector<dtdma::ReducedRhsEndpoints> endpoints;
+  std::vector<dtdma::RhsBatch> working;
+  std::vector<dtdma::EndpointBatch> endpoints;
   prepared.emplace_back(5, 1);
   working.emplace_back(5, 1);
   endpoints.emplace_back(1);
@@ -239,20 +249,24 @@ TEST_CASE("One virtual partition matches single-partition assembly") {
   endpoints[0].endpoint(0, 1) = 9.0F;
   dtdma::TridiagonalBatch single_reduced(2, 1);
   dtdma::TridiagonalBatch virtual_reduced(2, 1);
+  dtdma::RhsBatch single_reduced_rhs(2, 1);
+  dtdma::RhsBatch virtual_reduced_rhs(2, 1);
 
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared[0], working[0], endpoints[0], single_reduced);
+      original, prepared[0], working[0], endpoints[0], single_reduced,
+      single_reduced_rhs);
   dtdma::assemble_virtual_reduced_system(
       partitioning,
       std::span<const dtdma::PreparedOperatorBatch>(prepared),
-      endpoints, virtual_reduced);
+      endpoints, virtual_reduced, virtual_reduced_rhs);
 
   for (std::size_t row = 0; row < 2; ++row) {
     CHECK(virtual_reduced.lower(row, 0) == single_reduced.lower(row, 0));
     CHECK(virtual_reduced.diagonal(row, 0) ==
           single_reduced.diagonal(row, 0));
     CHECK(virtual_reduced.upper(row, 0) == single_reduced.upper(row, 0));
-    CHECK(virtual_reduced.rhs(row, 0) == single_reduced.rhs(row, 0));
+    CHECK(virtual_reduced_rhs.rhs(row, 0) ==
+          single_reduced_rhs.rhs(row, 0));
   }
   CHECK(virtual_reduced.lower(0, 0) == 0.0F);
   CHECK(virtual_reduced.diagonal(0, 0) == 10.0F);
@@ -264,22 +278,24 @@ TEST_CASE("Physical exterior sentinels are ignored for every partition count") {
   constexpr std::size_t row_count = 12;
   constexpr dtdma::Scalar tolerance = 2.0e-5F;
   dtdma::TridiagonalBatch valid(row_count, 1);
+  dtdma::RhsBatch valid_rhs(row_count, 1);
   for (std::size_t row = 0; row < row_count; ++row) {
     const dtdma::Scalar exact = static_cast<dtdma::Scalar>(row + 1);
     valid.lower(row, 0) = row == 0 ? 0.0F : -1.0F;
     valid.diagonal(row, 0) = 4.0F;
     valid.upper(row, 0) =
         row + 1 == row_count ? 0.0F : -1.0F;
-    valid.rhs(row, 0) = 4.0F * exact;
+    valid_rhs.rhs(row, 0) = 4.0F * exact;
     if (row > 0) {
-      valid.rhs(row, 0) -= static_cast<dtdma::Scalar>(row);
+      valid_rhs.rhs(row, 0) -= static_cast<dtdma::Scalar>(row);
     }
     if (row + 1 < row_count) {
-      valid.rhs(row, 0) -= static_cast<dtdma::Scalar>(row + 2);
+      valid_rhs.rhs(row, 0) -= static_cast<dtdma::Scalar>(row + 2);
     }
   }
 
   dtdma::TridiagonalBatch sentinel = valid;
+  dtdma::RhsBatch sentinel_rhs = valid_rhs;
   sentinel.lower(0, 0) = 99.0F;
   sentinel.upper(row_count - 1, 0) = -99.0F;
   const std::vector<dtdma::Scalar> preserved_lower(
@@ -289,51 +305,62 @@ TEST_CASE("Physical exterior sentinels are ignored for every partition count") {
   const std::vector<dtdma::Scalar> preserved_upper(
       sentinel.upper().begin(), sentinel.upper().end());
   const std::vector<dtdma::Scalar> preserved_rhs(
-      sentinel.rhs().begin(), sentinel.rhs().end());
+      sentinel_rhs.rhs().begin(), sentinel_rhs.rhs().end());
 
   dtdma::TridiagonalBatch global_reference = valid;
-  dtdma::batched_thomas_solve(global_reference);
+  dtdma::RhsBatch global_reference_rhs = valid_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
   for (std::size_t partition_count = 1; partition_count <= 4;
        ++partition_count) {
     const dtdma::VirtualPartitioning partitioning(
         row_count, partition_count);
-    const dtdma::TridiagonalBatch valid_reduced =
-        assemble_reduced_system_for_test(valid, partitioning);
-    const dtdma::TridiagonalBatch sentinel_reduced =
-        assemble_reduced_system_for_test(sentinel, partitioning);
+    const ReducedSystemFixture valid_reduced =
+        assemble_reduced_system_for_test(valid, valid_rhs, partitioning);
+    const ReducedSystemFixture sentinel_reduced =
+        assemble_reduced_system_for_test(sentinel, sentinel_rhs,
+                                         partitioning);
 
-    CHECK(std::vector<dtdma::Scalar>(sentinel_reduced.lower().begin(),
-                                     sentinel_reduced.lower().end()) ==
-          std::vector<dtdma::Scalar>(valid_reduced.lower().begin(),
-                                     valid_reduced.lower().end()));
-    CHECK(std::vector<dtdma::Scalar>(sentinel_reduced.diagonal().begin(),
-                                     sentinel_reduced.diagonal().end()) ==
-          std::vector<dtdma::Scalar>(valid_reduced.diagonal().begin(),
-                                     valid_reduced.diagonal().end()));
-    CHECK(std::vector<dtdma::Scalar>(sentinel_reduced.upper().begin(),
-                                     sentinel_reduced.upper().end()) ==
-          std::vector<dtdma::Scalar>(valid_reduced.upper().begin(),
-                                     valid_reduced.upper().end()));
-    CHECK(std::vector<dtdma::Scalar>(sentinel_reduced.rhs().begin(),
-                                     sentinel_reduced.rhs().end()) ==
-          std::vector<dtdma::Scalar>(valid_reduced.rhs().begin(),
-                                     valid_reduced.rhs().end()));
-    CHECK(sentinel_reduced.lower(0, 0) == 0.0F);
-    CHECK(sentinel_reduced.upper(2 * partition_count - 1, 0) == 0.0F);
+    CHECK(std::vector<dtdma::Scalar>(
+              sentinel_reduced.coefficients.lower().begin(),
+              sentinel_reduced.coefficients.lower().end()) ==
+          std::vector<dtdma::Scalar>(
+              valid_reduced.coefficients.lower().begin(),
+              valid_reduced.coefficients.lower().end()));
+    CHECK(std::vector<dtdma::Scalar>(
+              sentinel_reduced.coefficients.diagonal().begin(),
+              sentinel_reduced.coefficients.diagonal().end()) ==
+          std::vector<dtdma::Scalar>(
+              valid_reduced.coefficients.diagonal().begin(),
+              valid_reduced.coefficients.diagonal().end()));
+    CHECK(std::vector<dtdma::Scalar>(
+              sentinel_reduced.coefficients.upper().begin(),
+              sentinel_reduced.coefficients.upper().end()) ==
+          std::vector<dtdma::Scalar>(
+              valid_reduced.coefficients.upper().begin(),
+              valid_reduced.coefficients.upper().end()));
+    CHECK(std::vector<dtdma::Scalar>(sentinel_reduced.rhs.rhs().begin(),
+                                     sentinel_reduced.rhs.rhs().end()) ==
+          std::vector<dtdma::Scalar>(valid_reduced.rhs.rhs().begin(),
+                                     valid_reduced.rhs.rhs().end()));
+    CHECK(sentinel_reduced.coefficients.lower(0, 0) == 0.0F);
+    CHECK(sentinel_reduced.coefficients.upper(2 * partition_count - 1, 0) ==
+          0.0F);
     for (std::size_t rank = 0; rank + 1 < partition_count; ++rank) {
-      CHECK(sentinel_reduced.upper(2 * rank + 1, 0) == -1.0F);
-      CHECK(sentinel_reduced.lower(2 * rank + 2, 0) == -1.0F);
+      CHECK(sentinel_reduced.coefficients.upper(2 * rank + 1, 0) == -1.0F);
+      CHECK(sentinel_reduced.coefficients.lower(2 * rank + 2, 0) == -1.0F);
     }
 
-    dtdma::ReducedRhsBatch valid_solution(row_count, 1);
-    dtdma::ReducedRhsBatch sentinel_solution(row_count, 1);
-    dtdma::solve_virtual_system(valid, partitioning, valid_solution);
-    dtdma::solve_virtual_system(sentinel, partitioning,
+    dtdma::RhsBatch valid_solution(row_count, 1);
+    dtdma::RhsBatch sentinel_solution(row_count, 1);
+    dtdma::solve_virtual_system(valid, valid_rhs, partitioning,
+                                valid_solution);
+    dtdma::solve_virtual_system(sentinel, sentinel_rhs, partitioning,
                                 sentinel_solution);
     for (std::size_t row = 0; row < row_count; ++row) {
       CHECK(sentinel_solution.rhs(row, 0) == valid_solution.rhs(row, 0));
       CHECK(sentinel_solution.rhs(row, 0) ==
-            Catch::Approx(global_reference.rhs(row, 0)).margin(tolerance));
+            Catch::Approx(global_reference_rhs.rhs(row, 0))
+                .margin(tolerance));
     }
   }
 
@@ -346,14 +373,15 @@ TEST_CASE("Physical exterior sentinels are ignored for every partition count") {
   CHECK(std::vector<dtdma::Scalar>(sentinel.upper().begin(),
                                    sentinel.upper().end()) ==
         preserved_upper);
-  CHECK(std::vector<dtdma::Scalar>(sentinel.rhs().begin(),
-                                   sentinel.rhs().end()) == preserved_rhs);
+  CHECK(std::vector<dtdma::Scalar>(sentinel_rhs.rhs().begin(),
+                                   sentinel_rhs.rhs().end()) == preserved_rhs);
 }
 
 TEST_CASE("Virtual solves match global Thomas for every partition count") {
   constexpr std::size_t row_count = 24;
   constexpr dtdma::Scalar tolerance = 4.0e-5F;
   dtdma::TridiagonalBatch original(row_count, 1);
+  dtdma::RhsBatch input_rhs(row_count, 1);
   std::array<dtdma::Scalar, row_count> exact_solution{};
 
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -375,7 +403,7 @@ TEST_CASE("Virtual solves match global Thomas for every partition count") {
     if (row + 1 < row_count) {
       rhs += original.upper(row, 0) * exact_solution[row + 1];
     }
-    original.rhs(row, 0) = rhs;
+    input_rhs.rhs(row, 0) = rhs;
   }
 
   const std::vector<dtdma::Scalar> preserved_lower(original.lower().begin(),
@@ -384,18 +412,19 @@ TEST_CASE("Virtual solves match global Thomas for every partition count") {
       original.diagonal().begin(), original.diagonal().end());
   const std::vector<dtdma::Scalar> preserved_upper(original.upper().begin(),
                                                     original.upper().end());
-  const std::vector<dtdma::Scalar> preserved_rhs(original.rhs().begin(),
-                                                  original.rhs().end());
+  const std::vector<dtdma::Scalar> preserved_rhs(input_rhs.rhs().begin(),
+                                                  input_rhs.rhs().end());
   dtdma::TridiagonalBatch global_reference = original;
-  dtdma::batched_thomas_solve(global_reference);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
   std::array<std::vector<dtdma::Scalar>, 4> partition_solutions;
 
   for (std::size_t partition_count = 1;
        partition_count <= 4; ++partition_count) {
     const dtdma::VirtualPartitioning partitioning(
         row_count, partition_count);
-    dtdma::ReducedRhsBatch solution(row_count, 1);
-    dtdma::solve_virtual_system(original, partitioning, solution);
+    dtdma::RhsBatch solution(row_count, 1);
+    dtdma::solve_virtual_system(original, input_rhs, partitioning, solution);
     partition_solutions[partition_count - 1] =
         std::vector<dtdma::Scalar>(solution.rhs().begin(),
                                    solution.rhs().end());
@@ -413,7 +442,7 @@ TEST_CASE("Virtual solves match global Thomas for every partition count") {
       CHECK(solution.rhs(row, 0) ==
             Catch::Approx(exact_solution[row]).margin(tolerance));
       CHECK(solution.rhs(row, 0) ==
-            Catch::Approx(global_reference.rhs(row, 0)).margin(tolerance));
+            Catch::Approx(global_reference_rhs.rhs(row, 0)).margin(tolerance));
     }
   }
 
@@ -432,8 +461,8 @@ TEST_CASE("Virtual solves match global Thomas for every partition count") {
         preserved_diagonal);
   CHECK(std::vector<dtdma::Scalar>(original.upper().begin(),
                                    original.upper().end()) == preserved_upper);
-  CHECK(std::vector<dtdma::Scalar>(original.rhs().begin(),
-                                   original.rhs().end()) == preserved_rhs);
+  CHECK(std::vector<dtdma::Scalar>(input_rhs.rhs().begin(),
+                                   input_rhs.rhs().end()) == preserved_rhs);
 }
 
 TEST_CASE("Batched virtual solves keep systems independent for every partition count") {
@@ -441,6 +470,7 @@ TEST_CASE("Batched virtual solves keep systems independent for every partition c
   constexpr std::size_t batch_size = 3;
   constexpr dtdma::Scalar tolerance = 4.0e-5F;
   dtdma::TridiagonalBatch original(row_count, batch_size);
+  dtdma::RhsBatch input_rhs(row_count, batch_size);
   std::array<dtdma::Scalar, row_count * batch_size> exact_solution{};
 
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -481,19 +511,20 @@ TEST_CASE("Batched virtual solves keep systems independent for every partition c
         rhs += original.upper(row, system) *
                exact_solution[(row + 1) * batch_size + system];
       }
-      original.rhs(row, system) = rhs;
+      input_rhs.rhs(row, system) = rhs;
     }
   }
 
   dtdma::TridiagonalBatch global_reference = original;
-  dtdma::batched_thomas_solve(global_reference);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
   std::array<std::vector<dtdma::Scalar>, 4> partition_solutions;
   for (std::size_t partition_count = 1;
        partition_count <= 4; ++partition_count) {
     const dtdma::VirtualPartitioning partitioning(
         row_count, partition_count);
-    dtdma::ReducedRhsBatch solution(row_count, batch_size);
-    dtdma::solve_virtual_system(original, partitioning, solution);
+    dtdma::RhsBatch solution(row_count, batch_size);
+    dtdma::solve_virtual_system(original, input_rhs, partitioning, solution);
     partition_solutions[partition_count - 1] =
         std::vector<dtdma::Scalar>(solution.rhs().begin(),
                                    solution.rhs().end());
@@ -504,7 +535,7 @@ TEST_CASE("Batched virtual solves keep systems independent for every partition c
         CHECK(solution.rhs(row, system) ==
               Catch::Approx(exact_solution[index]).margin(tolerance));
         CHECK(solution.rhs(row, system) ==
-              Catch::Approx(global_reference.rhs(row, system))
+              Catch::Approx(global_reference_rhs.rhs(row, system))
                   .margin(tolerance));
       }
     }
@@ -516,11 +547,11 @@ TEST_CASE("Batched virtual solves keep systems independent for every partition c
         const std::size_t last_index =
             (partition.end_row - 1) * batch_size + system;
         CHECK(solution.rhs(partition.begin_row, system) ==
-              Catch::Approx(global_reference.rhs(partition.begin_row,
+              Catch::Approx(global_reference_rhs.rhs(partition.begin_row,
                                                   system))
                   .margin(tolerance));
         CHECK(solution.rhs(partition.end_row - 1, system) ==
-              Catch::Approx(global_reference.rhs(partition.end_row - 1,
+              Catch::Approx(global_reference_rhs.rhs(partition.end_row - 1,
                                                   system))
                   .margin(tolerance));
         CHECK(solution.rhs(partition.begin_row, system) ==
@@ -546,6 +577,7 @@ TEST_CASE("Deterministic random virtual solves match global Thomas") {
   constexpr std::size_t batch_size = 3;
   constexpr dtdma::Scalar tolerance = 1.0e-4F;
   dtdma::TridiagonalBatch original(row_count, batch_size);
+  dtdma::RhsBatch input_rhs(row_count, batch_size);
   std::array<dtdma::Scalar, row_count * batch_size> exact_solution{};
   std::mt19937 generator(271828U);
   std::uniform_real_distribution<dtdma::Scalar> coefficient_distribution(
@@ -584,27 +616,28 @@ TEST_CASE("Deterministic random virtual solves match global Thomas") {
         rhs += original.upper(row, system) *
                exact_solution[(row + 1) * batch_size + system];
       }
-      original.rhs(row, system) = rhs;
+      input_rhs.rhs(row, system) = rhs;
     }
   }
 
   dtdma::TridiagonalBatch global_reference = original;
-  dtdma::batched_thomas_solve(global_reference);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
   dtdma::Scalar maximum_difference = 0.0F;
   for (std::size_t partition_count = 1; partition_count <= 4;
        ++partition_count) {
     const dtdma::VirtualPartitioning partitioning(row_count,
                                                    partition_count);
-    dtdma::ReducedRhsBatch solution(row_count, batch_size);
-    dtdma::solve_virtual_system(original, partitioning, solution);
+    dtdma::RhsBatch solution(row_count, batch_size);
+    dtdma::solve_virtual_system(original, input_rhs, partitioning, solution);
     for (std::size_t row = 0; row < row_count; ++row) {
       for (std::size_t system = 0; system < batch_size; ++system) {
         const dtdma::Scalar difference =
             std::abs(solution.rhs(row, system) -
-                     global_reference.rhs(row, system));
+                     global_reference_rhs.rhs(row, system));
         maximum_difference = std::max(maximum_difference, difference);
         CHECK(solution.rhs(row, system) ==
-              Catch::Approx(global_reference.rhs(row, system))
+              Catch::Approx(global_reference_rhs.rhs(row, system))
                   .margin(tolerance));
       }
     }
@@ -615,12 +648,13 @@ TEST_CASE("Deterministic random virtual solves match global Thomas") {
 TEST_CASE("Virtual reduced operations reject incompatible dimensions") {
   const dtdma::VirtualPartitioning partitioning(7, 2);
   std::vector<dtdma::PreparedOperatorBatch> prepared;
-  std::vector<dtdma::ReducedRhsEndpoints> endpoints;
+  std::vector<dtdma::EndpointBatch> endpoints;
   prepared.emplace_back(4, 1);
   prepared.emplace_back(3, 1);
   endpoints.emplace_back(1);
   endpoints.emplace_back(1);
   dtdma::TridiagonalBatch reduced(4, 1);
+  dtdma::RhsBatch reduced_rhs(4, 1);
   dtdma::TridiagonalBatch wrong_reduced_rows(3, 1);
   dtdma::TridiagonalBatch wrong_reduced_batch(4, 2);
 
@@ -628,29 +662,31 @@ TEST_CASE("Virtual reduced operations reject incompatible dimensions") {
                       partitioning,
                       std::span<const dtdma::PreparedOperatorBatch>(
                           prepared.data(), 1),
-                      endpoints, reduced),
+                      endpoints, reduced, reduced_rhs),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_virtual_reduced_system(
                       partitioning,
                       std::span<const dtdma::PreparedOperatorBatch>(prepared),
                       endpoints,
-                      wrong_reduced_rows),
+                      wrong_reduced_rows, reduced_rhs),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_virtual_reduced_system(
                       partitioning,
                       std::span<const dtdma::PreparedOperatorBatch>(prepared),
                       endpoints,
-                      wrong_reduced_batch),
+                      wrong_reduced_batch, reduced_rhs),
                   std::invalid_argument);
 
-  std::vector<dtdma::ReducedRhsEndpoints> wrong_endpoint_batch;
+  std::vector<dtdma::EndpointBatch> wrong_endpoint_batch;
   wrong_endpoint_batch.emplace_back(1);
   wrong_endpoint_batch.emplace_back(2);
   CHECK_THROWS_AS(dtdma::recover_virtual_reduced_endpoints(
-                      partitioning, reduced, wrong_endpoint_batch),
+                      partitioning, reduced, reduced_rhs,
+                      wrong_endpoint_batch),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::recover_virtual_reduced_endpoints(
-                      partitioning, wrong_reduced_rows, endpoints),
+                      partitioning, wrong_reduced_rows, reduced_rhs,
+                      endpoints),
                   std::invalid_argument);
 }
 
@@ -658,17 +694,24 @@ TEST_CASE("Virtual solve rejects incompatible global dimensions") {
   const dtdma::TridiagonalBatch original(24, 2);
   const dtdma::VirtualPartitioning wrong_global_rows(12, 2);
   const dtdma::VirtualPartitioning partitioning(24, 2);
-  dtdma::ReducedRhsBatch solution(24, 2);
-  dtdma::ReducedRhsBatch wrong_solution_rows(12, 2);
-  dtdma::ReducedRhsBatch wrong_solution_batch(24, 1);
+  const dtdma::RhsBatch input_rhs(24, 2);
+  const dtdma::RhsBatch wrong_input_batch(24, 1);
+  dtdma::RhsBatch solution(24, 2);
+  dtdma::RhsBatch wrong_solution_rows(12, 2);
+  dtdma::RhsBatch wrong_solution_batch(24, 1);
 
   CHECK_THROWS_AS(dtdma::solve_virtual_system(
-                      original, wrong_global_rows, solution),
+                      original, input_rhs, wrong_global_rows, solution),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::solve_virtual_system(
-                      original, partitioning, wrong_solution_rows),
+                      original, wrong_input_batch, partitioning, solution),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::solve_virtual_system(
-                      original, partitioning, wrong_solution_batch),
+                      original, input_rhs, partitioning,
+                      wrong_solution_rows),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(dtdma::solve_virtual_system(
+                      original, input_rhs, partitioning,
+                      wrong_solution_batch),
                   std::invalid_argument);
 }

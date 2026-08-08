@@ -1,8 +1,9 @@
 #pragma once
 
+#include "dtdma/detail/coefficient_dimensions.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
-#include "dtdma/reduced_rhs_batch.hpp"
-#include "dtdma/reduced_rhs_endpoints.hpp"
+#include "dtdma/rhs_batch.hpp"
+#include "dtdma/endpoint_batch.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
 
 #include <cstddef>
@@ -15,23 +16,31 @@ template <typename OriginalOperator, typename PreparedOperator,
 inline void assemble_single_partition_reduced_system(
     const OriginalOperator& original,
     const PreparedOperator& prepared,
-    const ReducedRhsBatch& working,
-    const ReducedRhsEndpoints& reduced_rhs_endpoints,
-    ReducedOperator& reduced_system) {
+    const RhsBatch& working,
+    const EndpointBatch& reduced_rhs_endpoints,
+    ReducedOperator& reduced_system,
+    RhsBatch& reduced_rhs) {
   if (original.row_count() < 3) {
     throw std::invalid_argument(
         "single-partition assembly requires at least three local rows");
   }
   if (prepared.row_count() != original.row_count() ||
-      prepared.batch_size() != original.batch_size() ||
+      prepared.storage_system_count() !=
+          detail::storage_system_count(original) ||
       working.row_count() != original.row_count() ||
-      working.batch_size() != original.batch_size() ||
-      reduced_rhs_endpoints.batch_size() != original.batch_size()) {
+      !detail::rhs_batch_size_is_compatible(original,
+                                             working.batch_size()) ||
+      !detail::rhs_batch_size_is_compatible(prepared,
+                                             working.batch_size()) ||
+      reduced_rhs_endpoints.batch_size() != working.batch_size()) {
     throw std::invalid_argument(
         "single-partition local batch dimensions must match");
   }
   if (reduced_system.row_count() != 2 ||
-      reduced_system.batch_size() != original.batch_size()) {
+      reduced_rhs.row_count() != 2 ||
+      reduced_rhs.batch_size() != working.batch_size() ||
+      !detail::rhs_batch_size_is_compatible(reduced_system,
+                                             working.batch_size())) {
     throw std::invalid_argument(
         "single-partition reduced system must have two matching rows");
   }
@@ -52,10 +61,10 @@ inline void assemble_single_partition_reduced_system(
     reduced_system.upper(1, storage_system) = 0.0F;
   }
 
-  for (std::size_t system = 0; system < original.batch_size(); ++system) {
-    reduced_system.rhs(0, system) =
+  for (std::size_t system = 0; system < working.batch_size(); ++system) {
+    reduced_rhs.rhs(0, system) =
         reduced_rhs_endpoints.endpoint(system, 0);
-    reduced_system.rhs(1, system) =
+    reduced_rhs.rhs(1, system) =
         reduced_rhs_endpoints.endpoint(system, 1);
   }
 }
@@ -63,19 +72,23 @@ inline void assemble_single_partition_reduced_system(
 template <typename ReducedOperator>
 inline void recover_single_partition_endpoints(
     const ReducedOperator& solved_reduced_system,
-    ReducedRhsEndpoints& solved_endpoints) {
+    const RhsBatch& solved_reduced_rhs,
+    EndpointBatch& solved_endpoints) {
   if (solved_reduced_system.row_count() != 2 ||
-      solved_reduced_system.batch_size() != solved_endpoints.batch_size()) {
+      solved_reduced_rhs.row_count() != 2 ||
+      solved_reduced_rhs.batch_size() != solved_endpoints.batch_size() ||
+      !detail::rhs_batch_size_is_compatible(
+          solved_reduced_system, solved_reduced_rhs.batch_size())) {
     throw std::invalid_argument(
         "solved reduced system must have two rows matching the endpoints");
   }
 
   for (std::size_t system = 0;
-       system < solved_reduced_system.batch_size(); ++system) {
+       system < solved_reduced_rhs.batch_size(); ++system) {
     solved_endpoints.endpoint(system, 0) =
-        solved_reduced_system.rhs(0, system);
+        solved_reduced_rhs.rhs(0, system);
     solved_endpoints.endpoint(system, 1) =
-        solved_reduced_system.rhs(1, system);
+        solved_reduced_rhs.rhs(1, system);
   }
 }
 

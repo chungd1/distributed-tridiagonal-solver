@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dtdma/detail/coefficient_dimensions.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
 
@@ -16,7 +17,8 @@ inline void prepare_forward_coefficients(const OriginalOperator& original,
         "coefficient preparation requires at least three rows");
   }
   if (prepared.row_count() != original.row_count() ||
-      prepared.batch_size() != original.batch_size()) {
+      prepared.storage_system_count() !=
+          detail::storage_system_count(original)) {
     throw std::invalid_argument(
         "original and prepared batch dimensions must match");
   }

@@ -3,13 +3,14 @@
 #include "dtdma/batched_thomas_solver.hpp"
 #include "dtdma/forward_coefficient_preparation.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
-#include "dtdma/reduced_rhs_endpoints.hpp"
+#include "dtdma/endpoint_batch.hpp"
+#include "dtdma/rhs_batch.hpp"
 #include "dtdma/shared_prepared_operator.hpp"
-#include "dtdma/shared_tridiagonal_batch.hpp"
-#include "dtdma/shifted_diagonal_tridiagonal_batch.hpp"
+#include "dtdma/tridiagonal_shared.hpp"
+#include "dtdma/tridiagonal_shifted_diagonal.hpp"
 #include "dtdma/single_partition_reconstruction.hpp"
 #include "dtdma/single_partition_reduced_system.hpp"
-#include "dtdma/system_diagonal_tridiagonal_batch.hpp"
+#include "dtdma/tridiagonal_system_diagonal.hpp"
 #include "dtdma/virtual_partitioning.hpp"
 #include "dtdma/virtual_solve.hpp"
 
@@ -43,52 +44,77 @@ struct PipelineSnapshot {
 };
 
 template <typename OriginalOperator>
-void construct_rhs(OriginalOperator& original,
+void construct_rhs(const OriginalOperator& original,
+                   dtdma::RhsBatch& rhs,
                    const std::span<const dtdma::Scalar> exact) {
   const OriginalOperator& coefficients = original;
   for (std::size_t row = 0; row < original.row_count(); ++row) {
-    for (std::size_t system = 0; system < original.batch_size(); ++system) {
-      const std::size_t index = row * original.batch_size() + system;
+    for (std::size_t system = 0; system < rhs.batch_size(); ++system) {
+      const std::size_t index = row * rhs.batch_size() + system;
       dtdma::Scalar value =
           coefficients.diagonal(row, system) * exact[index];
       if (row > 0) {
         value += coefficients.lower(row, system) *
-                 exact[(row - 1) * original.batch_size() + system];
+                 exact[(row - 1) * rhs.batch_size() + system];
       }
       if (row + 1 < original.row_count()) {
         value += coefficients.upper(row, system) *
-                 exact[(row + 1) * original.batch_size() + system];
+                 exact[(row + 1) * rhs.batch_size() + system];
       }
-      original.rhs(row, system) = value;
+      rhs.rhs(row, system) = value;
     }
   }
 }
 
 template <typename OriginalOperator>
 dtdma::TridiagonalBatch materialize_fully_batched(
-    const OriginalOperator& original) {
-  dtdma::TridiagonalBatch result(original.row_count(),
-                                  original.batch_size());
+    const OriginalOperator& original,
+    const std::size_t system_count) {
+  dtdma::TridiagonalBatch result(original.row_count(), system_count);
   for (std::size_t row = 0; row < original.row_count(); ++row) {
-    for (std::size_t system = 0; system < original.batch_size(); ++system) {
+    for (std::size_t system = 0; system < system_count; ++system) {
       result.lower(row, system) = original.lower(row, system);
       result.diagonal(row, system) = original.diagonal(row, system);
       result.upper(row, system) = original.upper(row, system);
-      result.rhs(row, system) = original.rhs(row, system);
     }
   }
   return result;
 }
 
+inline dtdma::SharedPreparedOperator make_prepared(
+    const dtdma::TridiagonalShared& original) {
+  return dtdma::SharedPreparedOperator(original.row_count());
+}
+
+template <typename OriginalOperator>
+auto make_prepared(const OriginalOperator& original) {
+  return typename OriginalOperator::PreparedOperator(original.row_count(),
+                                                      original.system_count());
+}
+
+inline dtdma::TridiagonalShared make_reduced(
+    const dtdma::TridiagonalShared&,
+    const std::size_t row_count) {
+  return dtdma::TridiagonalShared(row_count);
+}
+
+template <typename OriginalOperator>
+auto make_reduced(const OriginalOperator& original,
+                  const std::size_t row_count) {
+  return typename OriginalOperator::ReducedOperator(row_count,
+                                                     original.system_count());
+}
+
 template <typename OriginalOperator>
 PipelineSnapshot run_single_partition_pipeline(
-    const OriginalOperator& original) {
+    const OriginalOperator& original,
+    const dtdma::RhsBatch& input_rhs) {
   using PreparedOperator = typename OriginalOperator::PreparedOperator;
   using ReducedOperator = typename OriginalOperator::ReducedOperator;
 
   const std::size_t row_count = original.row_count();
-  const std::size_t batch_size = original.batch_size();
-  PreparedOperator prepared(row_count, batch_size);
+  const std::size_t batch_size = input_rhs.batch_size();
+  PreparedOperator prepared = make_prepared(original);
   dtdma::prepare_forward_coefficients(original, prepared);
   dtdma::prepare_backward_coefficients(original, prepared);
 
@@ -105,30 +131,31 @@ PipelineSnapshot run_single_partition_pipeline(
     }
   }
 
-  dtdma::ReducedRhsBatch working(row_count, batch_size);
-  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::RhsBatch working(row_count, batch_size);
+  dtdma::initialize_reduced_rhs(input_rhs, working);
   dtdma::reduce_rhs_forward(original, prepared, working);
   dtdma::reduce_rhs_backward(original, prepared, working);
   snapshot.reduced_rhs.assign(working.rhs().begin(), working.rhs().end());
 
-  dtdma::ReducedRhsEndpoints endpoints(batch_size);
+  dtdma::EndpointBatch endpoints(batch_size);
   dtdma::extract_reduced_rhs_endpoints(working, endpoints);
-  ReducedOperator reduced(2, batch_size);
+  ReducedOperator reduced = make_reduced(original, 2);
+  dtdma::RhsBatch reduced_rhs(2, batch_size);
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced);
+      original, prepared, working, endpoints, reduced, reduced_rhs);
   snapshot.reduced_coefficient_element_count = reduced.lower().size();
-  snapshot.reduced_rhs_element_count = reduced.rhs().size();
+  snapshot.reduced_rhs_element_count = reduced_rhs.element_count();
   for (std::size_t row = 0; row < 2; ++row) {
     for (std::size_t system = 0; system < batch_size; ++system) {
       snapshot.reduced_lower.push_back(reduced.lower(row, system));
       snapshot.reduced_diagonal.push_back(reduced.diagonal(row, system));
       snapshot.reduced_upper.push_back(reduced.upper(row, system));
-      snapshot.reduced_system_rhs.push_back(reduced.rhs(row, system));
+      snapshot.reduced_system_rhs.push_back(reduced_rhs.rhs(row, system));
     }
   }
 
-  dtdma::batched_thomas_solve(reduced);
-  dtdma::recover_single_partition_endpoints(reduced, endpoints);
+  dtdma::batched_thomas_solve(reduced, reduced_rhs);
+  dtdma::recover_single_partition_endpoints(reduced, reduced_rhs, endpoints);
   snapshot.solved_endpoints.assign(endpoints.endpoints().begin(),
                                    endpoints.endpoints().end());
   dtdma::reconstruct_single_partition(prepared, working, endpoints);
@@ -161,34 +188,35 @@ void check_pipeline(const PipelineSnapshot& actual,
 template <typename OriginalOperator>
 std::vector<dtdma::Scalar> solve_with_prepared(
     const OriginalOperator& original,
+    const dtdma::RhsBatch& input_rhs,
     const typename OriginalOperator::PreparedOperator& prepared) {
   using ReducedOperator = typename OriginalOperator::ReducedOperator;
-  dtdma::ReducedRhsBatch working(original.row_count(),
-                                 original.batch_size());
-  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::RhsBatch working(original.row_count(), input_rhs.batch_size());
+  dtdma::initialize_reduced_rhs(input_rhs, working);
   dtdma::reduce_rhs_forward(original, prepared, working);
   dtdma::reduce_rhs_backward(original, prepared, working);
-  dtdma::ReducedRhsEndpoints endpoints(original.batch_size());
+  dtdma::EndpointBatch endpoints(input_rhs.batch_size());
   dtdma::extract_reduced_rhs_endpoints(working, endpoints);
-  ReducedOperator reduced(2, original.batch_size());
+  ReducedOperator reduced = make_reduced(original, 2);
+  dtdma::RhsBatch reduced_rhs(2, input_rhs.batch_size());
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced);
-  dtdma::batched_thomas_solve(reduced);
-  dtdma::recover_single_partition_endpoints(reduced, endpoints);
+      original, prepared, working, endpoints, reduced, reduced_rhs);
+  dtdma::batched_thomas_solve(reduced, reduced_rhs);
+  dtdma::recover_single_partition_endpoints(reduced, reduced_rhs, endpoints);
   dtdma::reconstruct_single_partition(prepared, working, endpoints);
   return {working.rhs().begin(), working.rhs().end()};
 }
 
 template <typename OriginalOperator>
 void check_virtual_solutions(const OriginalOperator& original,
+                             const dtdma::RhsBatch& input_rhs,
                              const std::vector<dtdma::Scalar>& reference,
                              const std::span<const std::size_t> counts) {
   for (const std::size_t partition_count : counts) {
     const dtdma::VirtualPartitioning partitioning(original.row_count(),
                                                    partition_count);
-    dtdma::ReducedRhsBatch solution(original.row_count(),
-                                    original.batch_size());
-    dtdma::solve_virtual_system(original, partitioning, solution);
+    dtdma::RhsBatch solution(original.row_count(), input_rhs.batch_size());
+    dtdma::solve_virtual_system(original, input_rhs, partitioning, solution);
     check_values({solution.rhs().begin(), solution.rhs().end()}, reference);
   }
 }
@@ -213,9 +241,9 @@ TEST_CASE("Shared coefficient storage remains shared through every solve stage")
   constexpr std::size_t batch_size = 3;
   const auto exact = make_exact(row_count, batch_size);
 
-  dtdma::SharedTridiagonalBatch shared(row_count, batch_size);
-  dtdma::ShiftedDiagonalTridiagonalBatch shifted(row_count, batch_size);
-  dtdma::SystemDiagonalTridiagonalBatch system_diagonal(row_count,
+  dtdma::TridiagonalShared shared(row_count);
+  dtdma::TridiagonalShiftedDiagonal shifted(row_count, batch_size);
+  dtdma::TridiagonalSystemDiagonal system_diagonal(row_count,
                                                          batch_size);
   dtdma::TridiagonalBatch fully_batched(row_count, batch_size);
   for (std::size_t system = 0; system < batch_size; ++system) {
@@ -241,16 +269,15 @@ TEST_CASE("Shared coefficient storage remains shared through every solve stage")
       fully_batched.upper(row, system) = upper;
     }
   }
-  construct_rhs(shared, exact);
-  construct_rhs(shifted, exact);
-  construct_rhs(system_diagonal, exact);
-  construct_rhs(fully_batched, exact);
+  dtdma::RhsBatch input_rhs(row_count, batch_size);
+  construct_rhs(shared, input_rhs, exact);
 
-  const auto shared_result = run_single_partition_pipeline(shared);
-  check_pipeline(run_single_partition_pipeline(shifted), shared_result);
-  check_pipeline(run_single_partition_pipeline(system_diagonal),
+  const auto shared_result = run_single_partition_pipeline(shared, input_rhs);
+  check_pipeline(run_single_partition_pipeline(shifted, input_rhs),
                  shared_result);
-  check_pipeline(run_single_partition_pipeline(fully_batched),
+  check_pipeline(run_single_partition_pipeline(system_diagonal, input_rhs),
+                 shared_result);
+  check_pipeline(run_single_partition_pipeline(fully_batched, input_rhs),
                  shared_result);
 
   CHECK(shared_result.prepared_physical_element_count == row_count);
@@ -259,27 +286,29 @@ TEST_CASE("Shared coefficient storage remains shared through every solve stage")
   CHECK(shared.lower().size() == row_count);
   CHECK(shared.diagonal().size() == row_count);
   CHECK(shared.upper().size() == row_count);
-  CHECK(shared.rhs().size() == row_count * batch_size);
   check_values(shared_result.solution, exact);
 
-  auto global_reference = materialize_fully_batched(shared);
-  dtdma::batched_thomas_solve(global_reference);
-  const std::vector<dtdma::Scalar> reference(global_reference.rhs().begin(),
-                                              global_reference.rhs().end());
+  auto global_reference = materialize_fully_batched(shared, batch_size);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
+  const std::vector<dtdma::Scalar> reference(
+      global_reference_rhs.rhs().begin(), global_reference_rhs.rhs().end());
   check_values(shared_result.solution, reference);
   constexpr std::array<std::size_t, 4> partition_counts{1, 2, 3, 4};
-  check_virtual_solutions(shared, reference, partition_counts);
-  check_virtual_solutions(shifted, reference, partition_counts);
-  check_virtual_solutions(system_diagonal, reference, partition_counts);
-  check_virtual_solutions(fully_batched, reference, partition_counts);
+  check_virtual_solutions(shared, input_rhs, reference, partition_counts);
+  check_virtual_solutions(shifted, input_rhs, reference, partition_counts);
+  check_virtual_solutions(system_diagonal, input_rhs, reference,
+                          partition_counts);
+  check_virtual_solutions(fully_batched, input_rhs, reference,
+                          partition_counts);
 }
 
 TEST_CASE("Shifted diagonal storage agrees with materialized diagonal storage") {
   constexpr std::size_t row_count = 14;
   constexpr std::size_t batch_size = 3;
   const auto exact = make_exact(row_count, batch_size);
-  dtdma::ShiftedDiagonalTridiagonalBatch shifted(row_count, batch_size);
-  dtdma::SystemDiagonalTridiagonalBatch system_diagonal(row_count,
+  dtdma::TridiagonalShiftedDiagonal shifted(row_count, batch_size);
+  dtdma::TridiagonalSystemDiagonal system_diagonal(row_count,
                                                          batch_size);
   dtdma::TridiagonalBatch fully_batched(row_count, batch_size);
   constexpr std::array<dtdma::Scalar, batch_size> shifts{-0.2F, 0.35F,
@@ -305,32 +334,35 @@ TEST_CASE("Shifted diagonal storage agrees with materialized diagonal storage") 
       fully_batched.upper(row, system) = upper;
     }
   }
-  construct_rhs(shifted, exact);
-  construct_rhs(system_diagonal, exact);
-  construct_rhs(fully_batched, exact);
+  dtdma::RhsBatch input_rhs(row_count, batch_size);
+  construct_rhs(shifted, input_rhs, exact);
 
-  const auto shifted_result = run_single_partition_pipeline(shifted);
-  check_pipeline(run_single_partition_pipeline(system_diagonal),
+  const auto shifted_result = run_single_partition_pipeline(shifted,
+                                                             input_rhs);
+  check_pipeline(run_single_partition_pipeline(system_diagonal, input_rhs),
                  shifted_result);
-  check_pipeline(run_single_partition_pipeline(fully_batched),
+  check_pipeline(run_single_partition_pipeline(fully_batched, input_rhs),
                  shifted_result);
   check_values(shifted_result.solution, exact);
-  auto global_reference = materialize_fully_batched(shifted);
-  dtdma::batched_thomas_solve(global_reference);
-  const std::vector<dtdma::Scalar> reference(global_reference.rhs().begin(),
-                                              global_reference.rhs().end());
+  auto global_reference = materialize_fully_batched(shifted, batch_size);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
+  const std::vector<dtdma::Scalar> reference(
+      global_reference_rhs.rhs().begin(), global_reference_rhs.rhs().end());
   check_values(shifted_result.solution, reference);
   constexpr std::array<std::size_t, 2> partition_counts{3, 4};
-  check_virtual_solutions(shifted, reference, partition_counts);
-  check_virtual_solutions(system_diagonal, reference, partition_counts);
-  check_virtual_solutions(fully_batched, reference, partition_counts);
+  check_virtual_solutions(shifted, input_rhs, reference, partition_counts);
+  check_virtual_solutions(system_diagonal, input_rhs, reference,
+                          partition_counts);
+  check_virtual_solutions(fully_batched, input_rhs, reference,
+                          partition_counts);
 }
 
 TEST_CASE("Arbitrary system diagonals agree with fully batched storage") {
   constexpr std::size_t row_count = 17;
   constexpr std::size_t batch_size = 3;
   const auto exact = make_exact(row_count, batch_size);
-  dtdma::SystemDiagonalTridiagonalBatch system_diagonal(row_count,
+  dtdma::TridiagonalSystemDiagonal system_diagonal(row_count,
                                                          batch_size);
   dtdma::TridiagonalBatch fully_batched(row_count, batch_size);
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -349,20 +381,26 @@ TEST_CASE("Arbitrary system diagonals agree with fully batched storage") {
       fully_batched.upper(row, system) = upper;
     }
   }
-  construct_rhs(system_diagonal, exact);
-  construct_rhs(fully_batched, exact);
+  dtdma::RhsBatch input_rhs(row_count, batch_size);
+  construct_rhs(system_diagonal, input_rhs, exact);
 
-  const auto system_result = run_single_partition_pipeline(system_diagonal);
-  check_pipeline(run_single_partition_pipeline(fully_batched), system_result);
+  const auto system_result = run_single_partition_pipeline(system_diagonal,
+                                                            input_rhs);
+  check_pipeline(run_single_partition_pipeline(fully_batched, input_rhs),
+                 system_result);
   check_values(system_result.solution, exact);
-  auto global_reference = materialize_fully_batched(system_diagonal);
-  dtdma::batched_thomas_solve(global_reference);
-  const std::vector<dtdma::Scalar> reference(global_reference.rhs().begin(),
-                                              global_reference.rhs().end());
+  auto global_reference =
+      materialize_fully_batched(system_diagonal, batch_size);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
+  const std::vector<dtdma::Scalar> reference(
+      global_reference_rhs.rhs().begin(), global_reference_rhs.rhs().end());
   check_values(system_result.solution, reference);
   constexpr std::array<std::size_t, 2> partition_counts{2, 4};
-  check_virtual_solutions(system_diagonal, reference, partition_counts);
-  check_virtual_solutions(fully_batched, reference, partition_counts);
+  check_virtual_solutions(system_diagonal, input_rhs, reference,
+                          partition_counts);
+  check_virtual_solutions(fully_batched, input_rhs, reference,
+                          partition_counts);
 }
 
 TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
@@ -374,8 +412,8 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
     value = 10.0F - 0.75F * value;
   }
 
-  dtdma::SharedTridiagonalBatch shared_a(row_count, batch_size);
-  dtdma::SharedTridiagonalBatch shared_b(row_count, batch_size);
+  dtdma::TridiagonalShared shared_a(row_count);
+  dtdma::TridiagonalShared shared_b(row_count);
   dtdma::TridiagonalBatch full_a(row_count, batch_size);
   dtdma::TridiagonalBatch full_b(row_count, batch_size);
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -391,12 +429,12 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
       full_a.upper(row, system) = full_b.upper(row, system) = upper;
     }
   }
-  construct_rhs(shared_a, exact_a);
-  construct_rhs(shared_b, exact_b);
-  construct_rhs(full_a, exact_a);
-  construct_rhs(full_b, exact_b);
+  dtdma::RhsBatch input_a(row_count, batch_size);
+  dtdma::RhsBatch input_b(row_count, batch_size);
+  construct_rhs(shared_a, input_a, exact_a);
+  construct_rhs(shared_b, input_b, exact_b);
 
-  dtdma::SharedPreparedOperator shared_prepared(row_count, batch_size);
+  dtdma::SharedPreparedOperator shared_prepared(row_count);
   dtdma::prepare_forward_coefficients(shared_a, shared_prepared);
   dtdma::prepare_backward_coefficients(shared_a, shared_prepared);
   const std::vector<dtdma::Scalar> shared_lower(
@@ -408,14 +446,15 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
   const std::vector<dtdma::Scalar> shared_upper(
       shared_prepared.prepared_upper().begin(),
       shared_prepared.prepared_upper().end());
-  auto shared_reference_a = materialize_fully_batched(shared_a);
-  dtdma::batched_thomas_solve(shared_reference_a);
+  auto shared_reference_a = materialize_fully_batched(shared_a, batch_size);
+  dtdma::RhsBatch shared_reference_rhs_a = input_a;
+  dtdma::batched_thomas_solve(shared_reference_a, shared_reference_rhs_a);
   const std::vector<dtdma::Scalar> shared_result_a =
-      solve_with_prepared(shared_a, shared_prepared);
+      solve_with_prepared(shared_a, input_a, shared_prepared);
   check_values(shared_result_a, exact_a);
   check_values(shared_result_a,
-               {shared_reference_a.rhs().begin(),
-                shared_reference_a.rhs().end()});
+               {shared_reference_rhs_a.rhs().begin(),
+                shared_reference_rhs_a.rhs().end()});
   CHECK(std::equal(shared_lower.begin(), shared_lower.end(),
                    shared_prepared.prepared_lower().begin()));
   CHECK(std::equal(shared_diagonal.begin(), shared_diagonal.end(),
@@ -423,14 +462,15 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
   CHECK(std::equal(shared_upper.begin(), shared_upper.end(),
                    shared_prepared.prepared_upper().begin()));
 
-  auto shared_reference_b = materialize_fully_batched(shared_b);
-  dtdma::batched_thomas_solve(shared_reference_b);
+  auto shared_reference_b = materialize_fully_batched(shared_b, batch_size);
+  dtdma::RhsBatch shared_reference_rhs_b = input_b;
+  dtdma::batched_thomas_solve(shared_reference_b, shared_reference_rhs_b);
   const std::vector<dtdma::Scalar> shared_result_b =
-      solve_with_prepared(shared_b, shared_prepared);
+      solve_with_prepared(shared_b, input_b, shared_prepared);
   check_values(shared_result_b, exact_b);
   check_values(shared_result_b,
-               {shared_reference_b.rhs().begin(),
-                shared_reference_b.rhs().end()});
+               {shared_reference_rhs_b.rhs().begin(),
+                shared_reference_rhs_b.rhs().end()});
   CHECK(std::equal(shared_lower.begin(), shared_lower.end(),
                    shared_prepared.prepared_lower().begin()));
   CHECK(std::equal(shared_diagonal.begin(), shared_diagonal.end(),
@@ -451,12 +491,14 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
       full_prepared.prepared_upper().begin(),
       full_prepared.prepared_upper().end());
   dtdma::TridiagonalBatch full_reference_a = full_a;
-  dtdma::batched_thomas_solve(full_reference_a);
+  dtdma::RhsBatch full_reference_rhs_a = input_a;
+  dtdma::batched_thomas_solve(full_reference_a, full_reference_rhs_a);
   const std::vector<dtdma::Scalar> full_result_a =
-      solve_with_prepared(full_a, full_prepared);
+      solve_with_prepared(full_a, input_a, full_prepared);
   check_values(full_result_a, exact_a);
   check_values(full_result_a,
-               {full_reference_a.rhs().begin(), full_reference_a.rhs().end()});
+               {full_reference_rhs_a.rhs().begin(),
+                full_reference_rhs_a.rhs().end()});
   CHECK(std::equal(full_lower.begin(), full_lower.end(),
                    full_prepared.prepared_lower().begin()));
   CHECK(std::equal(full_diagonal.begin(), full_diagonal.end(),
@@ -465,12 +507,14 @@ TEST_CASE("Prepared operators are reusable for unrelated right hand sides") {
                    full_prepared.prepared_upper().begin()));
 
   dtdma::TridiagonalBatch full_reference_b = full_b;
-  dtdma::batched_thomas_solve(full_reference_b);
+  dtdma::RhsBatch full_reference_rhs_b = input_b;
+  dtdma::batched_thomas_solve(full_reference_b, full_reference_rhs_b);
   const std::vector<dtdma::Scalar> full_result_b =
-      solve_with_prepared(full_b, full_prepared);
+      solve_with_prepared(full_b, input_b, full_prepared);
   check_values(full_result_b, exact_b);
   check_values(full_result_b,
-               {full_reference_b.rhs().begin(), full_reference_b.rhs().end()});
+               {full_reference_rhs_b.rhs().begin(),
+                full_reference_rhs_b.rhs().end()});
   CHECK(std::equal(full_lower.begin(), full_lower.end(),
                    full_prepared.prepared_lower().begin()));
   CHECK(std::equal(full_diagonal.begin(), full_diagonal.end(),

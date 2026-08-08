@@ -11,10 +11,10 @@
 
 namespace dtdma {
 
-class ReducedRhsBatch {
+class RhsBatch {
  public:
-  ReducedRhsBatch(const std::size_t row_count,
-                  const std::size_t batch_size)
+  RhsBatch(const std::size_t row_count,
+           const std::size_t batch_size)
       : row_count_(row_count),
         batch_size_(batch_size),
         element_count_(checked_element_count(row_count, batch_size)),
@@ -50,7 +50,7 @@ class ReducedRhsBatch {
       throw std::invalid_argument("batch size must be greater than zero");
     }
     if (row_count > std::numeric_limits<std::size_t>::max() / batch_size) {
-      throw std::length_error("reduced RHS batch element count overflows");
+      throw std::length_error("RHS batch element count overflows");
     }
     return row_count * batch_size;
   }

@@ -4,8 +4,8 @@
 #include "dtdma/forward_coefficient_preparation.hpp"
 #include "dtdma/forward_rhs_reduction.hpp"
 #include "dtdma/prepared_operator_batch.hpp"
-#include "dtdma/reduced_rhs_batch.hpp"
-#include "dtdma/reduced_rhs_endpoints.hpp"
+#include "dtdma/rhs_batch.hpp"
+#include "dtdma/endpoint_batch.hpp"
 #include "dtdma/scalar.hpp"
 #include "dtdma/single_partition_reconstruction.hpp"
 #include "dtdma/single_partition_reduced_system.hpp"
@@ -24,6 +24,7 @@
 TEST_CASE("A single-partition solve matches a hand-checkable system") {
   constexpr dtdma::Scalar tolerance = 2.0e-5F;
   dtdma::TridiagonalBatch original(5, 1);
+  dtdma::RhsBatch input_rhs(5, 1);
   const std::array<dtdma::Scalar, 5> lower{0.0F, 1.0F, 1.0F, 1.0F,
                                            1.0F};
   const std::array<dtdma::Scalar, 5> diagonal{4.0F, 4.0F, 4.0F, 4.0F,
@@ -39,7 +40,7 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
     original.lower(row, 0) = lower[row];
     original.diagonal(row, 0) = diagonal[row];
     original.upper(row, 0) = upper[row];
-    original.rhs(row, 0) = rhs[row];
+    input_rhs.rhs(row, 0) = rhs[row];
   }
 
   const std::vector<dtdma::Scalar> original_lower(original.lower().begin(),
@@ -48,11 +49,12 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
       original.diagonal().begin(), original.diagonal().end());
   const std::vector<dtdma::Scalar> original_upper(original.upper().begin(),
                                                    original.upper().end());
-  const std::vector<dtdma::Scalar> original_rhs(original.rhs().begin(),
-                                                 original.rhs().end());
+  const std::vector<dtdma::Scalar> original_rhs(input_rhs.rhs().begin(),
+                                                 input_rhs.rhs().end());
 
   dtdma::TridiagonalBatch global_reference = original;
-  dtdma::batched_thomas_solve(global_reference);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
 
   dtdma::PreparedOperatorBatch prepared(5, 1);
   dtdma::prepare_forward_coefficients(original, prepared);
@@ -65,12 +67,12 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
   const std::vector<dtdma::Scalar> prepared_upper(
       prepared.prepared_upper().begin(), prepared.prepared_upper().end());
 
-  dtdma::ReducedRhsBatch working(5, 1);
-  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::RhsBatch working(5, 1);
+  dtdma::initialize_reduced_rhs(input_rhs, working);
   dtdma::reduce_rhs_forward(original, prepared, working);
   dtdma::reduce_rhs_backward(original, prepared, working);
 
-  dtdma::ReducedRhsEndpoints endpoints(1);
+  dtdma::EndpointBatch endpoints(1);
   dtdma::extract_reduced_rhs_endpoints(working, endpoints);
   CHECK(endpoints.endpoint(0, 0) ==
         Catch::Approx(3.64285714F).margin(tolerance));
@@ -78,26 +80,28 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
         Catch::Approx(18.6428571F).margin(tolerance));
 
   dtdma::TridiagonalBatch reduced_system(2, 1);
+  dtdma::RhsBatch reduced_rhs(2, 1);
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced_system);
+      original, prepared, working, endpoints, reduced_system, reduced_rhs);
 
   CHECK(reduced_system.lower(0, 0) == 0.0F);
   CHECK(reduced_system.diagonal(0, 0) ==
         Catch::Approx(3.73214286F).margin(tolerance));
   CHECK(reduced_system.upper(0, 0) ==
         Catch::Approx(-0.0178571429F).margin(tolerance));
-  CHECK(reduced_system.rhs(0, 0) ==
+  CHECK(reduced_rhs.rhs(0, 0) ==
         Catch::Approx(3.64285714F).margin(tolerance));
   CHECK(reduced_system.lower(1, 0) ==
         Catch::Approx(-0.0178571429F).margin(tolerance));
   CHECK(reduced_system.diagonal(1, 0) ==
         Catch::Approx(3.73214286F).margin(tolerance));
   CHECK(reduced_system.upper(1, 0) == 0.0F);
-  CHECK(reduced_system.rhs(1, 0) ==
+  CHECK(reduced_rhs.rhs(1, 0) ==
         Catch::Approx(18.6428571F).margin(tolerance));
 
-  dtdma::batched_thomas_solve(reduced_system);
-  dtdma::recover_single_partition_endpoints(reduced_system, endpoints);
+  dtdma::batched_thomas_solve(reduced_system, reduced_rhs);
+  dtdma::recover_single_partition_endpoints(reduced_system, reduced_rhs,
+                                             endpoints);
   CHECK(endpoints.endpoint(0, 0) ==
         Catch::Approx(exact_solution[0]).margin(tolerance));
   CHECK(endpoints.endpoint(0, 1) ==
@@ -110,11 +114,11 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
     CHECK(working.rhs(row, 0) ==
           Catch::Approx(exact_solution[row]).margin(tolerance));
     CHECK(working.rhs(row, 0) ==
-          Catch::Approx(global_reference.rhs(row, 0)).margin(tolerance));
+          Catch::Approx(global_reference_rhs.rhs(row, 0)).margin(tolerance));
     maximum_difference =
         std::max(maximum_difference,
                  std::abs(working.rhs(row, 0) -
-                          global_reference.rhs(row, 0)));
+                          global_reference_rhs.rhs(row, 0)));
   }
   CHECK(maximum_difference <= tolerance);
 
@@ -125,8 +129,8 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
         original_diagonal);
   CHECK(std::vector<dtdma::Scalar>(original.upper().begin(),
                                    original.upper().end()) == original_upper);
-  CHECK(std::vector<dtdma::Scalar>(original.rhs().begin(),
-                                   original.rhs().end()) == original_rhs);
+  CHECK(std::vector<dtdma::Scalar>(input_rhs.rhs().begin(),
+                                   input_rhs.rhs().end()) == original_rhs);
   CHECK(std::vector<dtdma::Scalar>(prepared.prepared_lower().begin(),
                                    prepared.prepared_lower().end()) ==
         prepared_lower);
@@ -141,9 +145,10 @@ TEST_CASE("A single-partition solve matches a hand-checkable system") {
 TEST_CASE("Single-partition assembly canonicalizes physical exterior slots") {
   dtdma::TridiagonalBatch original(5, 1);
   dtdma::PreparedOperatorBatch prepared(5, 1);
-  dtdma::ReducedRhsBatch working(5, 1);
-  dtdma::ReducedRhsEndpoints endpoints(1);
+  dtdma::RhsBatch working(5, 1);
+  dtdma::EndpointBatch endpoints(1);
   dtdma::TridiagonalBatch reduced_system(2, 1);
+  dtdma::RhsBatch reduced_rhs(2, 1);
 
   prepared.prepared_lower(0, 0) = 2.0F;
   prepared.prepared_diagonal(0, 0) = 10.0F;
@@ -169,16 +174,16 @@ TEST_CASE("Single-partition assembly canonicalizes physical exterior slots") {
       endpoints.endpoints().begin(), endpoints.endpoints().end());
 
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced_system);
+      original, prepared, working, endpoints, reduced_system, reduced_rhs);
 
   CHECK(reduced_system.lower(0, 0) == 0.0F);
   CHECK(reduced_system.diagonal(0, 0) == 10.0F);
   CHECK(reduced_system.upper(0, 0) == 3.0F);
-  CHECK(reduced_system.rhs(0, 0) == 7.0F);
+  CHECK(reduced_rhs.rhs(0, 0) == 7.0F);
   CHECK(reduced_system.lower(1, 0) == 4.0F);
   CHECK(reduced_system.diagonal(1, 0) == 20.0F);
   CHECK(reduced_system.upper(1, 0) == 0.0F);
-  CHECK(reduced_system.rhs(1, 0) == 9.0F);
+  CHECK(reduced_rhs.rhs(1, 0) == 9.0F);
   CHECK(std::vector<dtdma::Scalar>(prepared.prepared_lower().begin(),
                                    prepared.prepared_lower().end()) ==
         preserved_prepared_lower);
@@ -197,8 +202,8 @@ TEST_CASE("Single-partition assembly canonicalizes physical exterior slots") {
 
 TEST_CASE("Single-partition reconstruction matches fixed interior values") {
   dtdma::PreparedOperatorBatch prepared(5, 1);
-  dtdma::ReducedRhsBatch working(5, 1);
-  dtdma::ReducedRhsEndpoints solved_endpoints(1);
+  dtdma::RhsBatch working(5, 1);
+  dtdma::EndpointBatch solved_endpoints(1);
   const std::array<dtdma::Scalar, 5> reduced_rhs{99.0F, 7.0F, 10.0F,
                                                  4.0F, 88.0F};
 
@@ -234,6 +239,7 @@ TEST_CASE("Single-partition reconstruction matches fixed interior values") {
 TEST_CASE("A row-varying single-partition solve matches global Thomas") {
   constexpr dtdma::Scalar tolerance = 2.0e-5F;
   dtdma::TridiagonalBatch original(6, 1);
+  dtdma::RhsBatch input_rhs(6, 1);
   const std::array<dtdma::Scalar, 6> lower{0.0F, -0.5F, 1.25F, -1.0F,
                                            0.75F, 2.0F};
   const std::array<dtdma::Scalar, 6> diagonal{3.0F, 4.5F, 5.0F, 6.5F,
@@ -254,32 +260,35 @@ TEST_CASE("A row-varying single-partition solve matches global Thomas") {
     if (row + 1 < original.row_count()) {
       value += upper[row] * exact_solution[row + 1];
     }
-    original.rhs(row, 0) = value;
+    input_rhs.rhs(row, 0) = value;
   }
 
   dtdma::TridiagonalBatch global_reference = original;
-  dtdma::batched_thomas_solve(global_reference);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
   dtdma::PreparedOperatorBatch prepared(6, 1);
   dtdma::prepare_forward_coefficients(original, prepared);
   dtdma::prepare_backward_coefficients(original, prepared);
-  dtdma::ReducedRhsBatch working(6, 1);
-  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::RhsBatch working(6, 1);
+  dtdma::initialize_reduced_rhs(input_rhs, working);
   dtdma::reduce_rhs_forward(original, prepared, working);
   dtdma::reduce_rhs_backward(original, prepared, working);
-  dtdma::ReducedRhsEndpoints endpoints(1);
+  dtdma::EndpointBatch endpoints(1);
   dtdma::extract_reduced_rhs_endpoints(working, endpoints);
   dtdma::TridiagonalBatch reduced_system(2, 1);
+  dtdma::RhsBatch reduced_rhs(2, 1);
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced_system);
-  dtdma::batched_thomas_solve(reduced_system);
-  dtdma::recover_single_partition_endpoints(reduced_system, endpoints);
+      original, prepared, working, endpoints, reduced_system, reduced_rhs);
+  dtdma::batched_thomas_solve(reduced_system, reduced_rhs);
+  dtdma::recover_single_partition_endpoints(reduced_system, reduced_rhs,
+                                             endpoints);
   dtdma::reconstruct_single_partition(prepared, working, endpoints);
 
   for (std::size_t row = 0; row < original.row_count(); ++row) {
     CHECK(working.rhs(row, 0) ==
           Catch::Approx(exact_solution[row]).margin(tolerance));
     CHECK(working.rhs(row, 0) ==
-          Catch::Approx(global_reference.rhs(row, 0)).margin(tolerance));
+          Catch::Approx(global_reference_rhs.rhs(row, 0)).margin(tolerance));
   }
 }
 
@@ -288,6 +297,7 @@ TEST_CASE("A batched single-partition solve keeps systems independent") {
   constexpr std::size_t batch_size = 3;
   constexpr dtdma::Scalar tolerance = 2.0e-5F;
   dtdma::TridiagonalBatch original(row_count, batch_size);
+  dtdma::RhsBatch input_rhs(row_count, batch_size);
   const std::array<dtdma::Scalar, row_count * batch_size> exact_solution{
       1.0F, -1.0F, 3.0F,
       2.0F, 0.5F, -2.0F,
@@ -328,26 +338,29 @@ TEST_CASE("A batched single-partition solve keeps systems independent") {
         value += upper[index] *
                  exact_solution[(row + 1) * batch_size + system];
       }
-      original.rhs(row, system) = value;
+      input_rhs.rhs(row, system) = value;
     }
   }
 
   dtdma::TridiagonalBatch global_reference = original;
-  dtdma::batched_thomas_solve(global_reference);
+  dtdma::RhsBatch global_reference_rhs = input_rhs;
+  dtdma::batched_thomas_solve(global_reference, global_reference_rhs);
   dtdma::PreparedOperatorBatch prepared(row_count, batch_size);
   dtdma::prepare_forward_coefficients(original, prepared);
   dtdma::prepare_backward_coefficients(original, prepared);
-  dtdma::ReducedRhsBatch working(row_count, batch_size);
-  dtdma::initialize_reduced_rhs(original, working);
+  dtdma::RhsBatch working(row_count, batch_size);
+  dtdma::initialize_reduced_rhs(input_rhs, working);
   dtdma::reduce_rhs_forward(original, prepared, working);
   dtdma::reduce_rhs_backward(original, prepared, working);
-  dtdma::ReducedRhsEndpoints endpoints(batch_size);
+  dtdma::EndpointBatch endpoints(batch_size);
   dtdma::extract_reduced_rhs_endpoints(working, endpoints);
   dtdma::TridiagonalBatch reduced_system(2, batch_size);
+  dtdma::RhsBatch reduced_rhs(2, batch_size);
   dtdma::assemble_single_partition_reduced_system(
-      original, prepared, working, endpoints, reduced_system);
-  dtdma::batched_thomas_solve(reduced_system);
-  dtdma::recover_single_partition_endpoints(reduced_system, endpoints);
+      original, prepared, working, endpoints, reduced_system, reduced_rhs);
+  dtdma::batched_thomas_solve(reduced_system, reduced_rhs);
+  dtdma::recover_single_partition_endpoints(reduced_system, reduced_rhs,
+                                             endpoints);
   dtdma::reconstruct_single_partition(prepared, working, endpoints);
 
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -356,7 +369,7 @@ TEST_CASE("A batched single-partition solve keeps systems independent") {
       CHECK(working.rhs(row, system) ==
             Catch::Approx(exact_solution[index]).margin(tolerance));
       CHECK(working.rhs(row, system) ==
-            Catch::Approx(global_reference.rhs(row, system))
+            Catch::Approx(global_reference_rhs.rhs(row, system))
                 .margin(tolerance));
     }
   }
@@ -365,86 +378,90 @@ TEST_CASE("A batched single-partition solve keeps systems independent") {
 TEST_CASE("Single-partition assembly rejects incompatible dimensions") {
   const dtdma::TridiagonalBatch too_short(2, 1);
   const dtdma::PreparedOperatorBatch too_short_prepared(2, 1);
-  const dtdma::ReducedRhsBatch too_short_working(2, 1);
-  const dtdma::ReducedRhsEndpoints one_endpoint_batch(1);
+  const dtdma::RhsBatch too_short_working(2, 1);
+  const dtdma::EndpointBatch one_endpoint_batch(1);
   dtdma::TridiagonalBatch reduced_one(2, 1);
+  dtdma::RhsBatch reduced_one_rhs(2, 1);
   CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
                       too_short, too_short_prepared, too_short_working,
-                      one_endpoint_batch, reduced_one),
+                      one_endpoint_batch, reduced_one, reduced_one_rhs),
                   std::invalid_argument);
 
   const dtdma::TridiagonalBatch original(5, 2);
   const dtdma::PreparedOperatorBatch prepared(5, 2);
-  const dtdma::ReducedRhsBatch working(5, 2);
-  const dtdma::ReducedRhsEndpoints endpoints(2);
+  const dtdma::RhsBatch working(5, 2);
+  const dtdma::EndpointBatch endpoints(2);
   const dtdma::PreparedOperatorBatch wrong_prepared_rows(4, 2);
   const dtdma::PreparedOperatorBatch wrong_prepared_batch(5, 3);
-  const dtdma::ReducedRhsBatch wrong_working_rows(4, 2);
-  const dtdma::ReducedRhsBatch wrong_working_batch(5, 3);
-  const dtdma::ReducedRhsEndpoints wrong_endpoints(3);
+  const dtdma::RhsBatch wrong_working_rows(4, 2);
+  const dtdma::RhsBatch wrong_working_batch(5, 3);
+  const dtdma::EndpointBatch wrong_endpoints(3);
   dtdma::TridiagonalBatch reduced(2, 2);
+  dtdma::RhsBatch reduced_rhs(2, 2);
   dtdma::TridiagonalBatch wrong_reduced_rows(3, 2);
   dtdma::TridiagonalBatch wrong_reduced_batch(2, 3);
 
   CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
                       original, wrong_prepared_rows, working, endpoints,
-                      reduced),
+                      reduced, reduced_rhs),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
                       original, wrong_prepared_batch, working, endpoints,
-                      reduced),
+                      reduced, reduced_rhs),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
                       original, prepared, wrong_working_rows, endpoints,
-                      reduced),
+                      reduced, reduced_rhs),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
                       original, prepared, wrong_working_batch, endpoints,
-                      reduced),
+                      reduced, reduced_rhs),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
-                      original, prepared, working, wrong_endpoints, reduced),
-                  std::invalid_argument);
-  CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
-                      original, prepared, working, endpoints,
-                      wrong_reduced_rows),
+                      original, prepared, working, wrong_endpoints, reduced,
+                      reduced_rhs),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
                       original, prepared, working, endpoints,
-                      wrong_reduced_batch),
+                      wrong_reduced_rows, reduced_rhs),
+                  std::invalid_argument);
+  CHECK_THROWS_AS(dtdma::assemble_single_partition_reduced_system(
+                      original, prepared, working, endpoints,
+                      wrong_reduced_batch, reduced_rhs),
                   std::invalid_argument);
 }
 
 TEST_CASE("Endpoint recovery and reconstruction reject incompatible dimensions") {
   const dtdma::TridiagonalBatch wrong_reduced_rows(3, 2);
   const dtdma::TridiagonalBatch wrong_reduced_batch(2, 3);
-  dtdma::ReducedRhsEndpoints endpoints(2);
+  const dtdma::RhsBatch reduced_rhs(2, 2);
+  dtdma::EndpointBatch endpoints(2);
   CHECK_THROWS_AS(dtdma::recover_single_partition_endpoints(
-                      wrong_reduced_rows, endpoints),
+                      wrong_reduced_rows, reduced_rhs, endpoints),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::recover_single_partition_endpoints(
-                      wrong_reduced_batch, endpoints),
+                      wrong_reduced_batch, reduced_rhs, endpoints),
                   std::invalid_argument);
 
   const dtdma::PreparedOperatorBatch too_short_prepared(2, 1);
-  dtdma::ReducedRhsBatch too_short_working(2, 1);
-  const dtdma::ReducedRhsEndpoints one_endpoint_batch(1);
+  dtdma::RhsBatch too_short_working(2, 1);
+  const dtdma::EndpointBatch one_endpoint_batch(1);
   CHECK_THROWS_AS(dtdma::reconstruct_single_partition(
                       too_short_prepared, too_short_working,
                       one_endpoint_batch),
                   std::invalid_argument);
 
   const dtdma::PreparedOperatorBatch prepared(5, 2);
-  dtdma::ReducedRhsBatch wrong_working_rows(4, 2);
-  dtdma::ReducedRhsBatch wrong_working_batch(5, 3);
-  const dtdma::ReducedRhsEndpoints wrong_endpoints(3);
+  dtdma::RhsBatch wrong_working_rows(4, 2);
+  dtdma::RhsBatch wrong_working_batch(5, 3);
+  const dtdma::EndpointBatch wrong_endpoints(3);
   CHECK_THROWS_AS(dtdma::reconstruct_single_partition(
                       prepared, wrong_working_rows, endpoints),
                   std::invalid_argument);
   CHECK_THROWS_AS(dtdma::reconstruct_single_partition(
                       prepared, wrong_working_batch, endpoints),
                   std::invalid_argument);
-  dtdma::ReducedRhsBatch working(5, 2);
+  dtdma::RhsBatch working(5, 2);
   CHECK_THROWS_AS(dtdma::reconstruct_single_partition(
                       prepared, working, wrong_endpoints),
                   std::invalid_argument);

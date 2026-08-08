@@ -20,7 +20,7 @@ TEST_CASE("A prepared operator batch mirrors the original batch layout") {
   dtdma::PreparedOperatorBatch prepared(4, 3);
 
   CHECK(prepared.row_count() == original.row_count());
-  CHECK(prepared.batch_size() == original.batch_size());
+  CHECK(prepared.batch_size() == original.system_count());
   CHECK(prepared.element_count() == original.element_count());
   CHECK(prepared.prepared_lower().size() == original.element_count());
   CHECK(prepared.prepared_diagonal().size() == original.element_count());
@@ -115,12 +115,11 @@ TEST_CASE("Forward coefficient preparation preserves original batch data") {
   dtdma::PreparedOperatorBatch prepared(4, 2);
 
   for (std::size_t row = 0; row < original.row_count(); ++row) {
-    for (std::size_t system = 0; system < original.batch_size(); ++system) {
+    for (std::size_t system = 0; system < original.system_count(); ++system) {
       const auto value = static_cast<dtdma::Scalar>(row * 3 + system + 1);
       original.lower(row, system) = value;
       original.diagonal(row, system) = value + 10.0F;
       original.upper(row, system) = value + 2.0F;
-      original.rhs(row, system) = value + 20.0F;
     }
   }
 
@@ -130,8 +129,6 @@ TEST_CASE("Forward coefficient preparation preserves original batch data") {
                                              original.diagonal().end());
   const std::vector<dtdma::Scalar> upper(original.upper().begin(),
                                           original.upper().end());
-  const std::vector<dtdma::Scalar> rhs(original.rhs().begin(),
-                                        original.rhs().end());
 
   dtdma::prepare_forward_coefficients(original, prepared);
 
@@ -141,15 +138,13 @@ TEST_CASE("Forward coefficient preparation preserves original batch data") {
                                    original.diagonal().end()) == diagonal);
   CHECK(std::vector<dtdma::Scalar>(original.upper().begin(),
                                    original.upper().end()) == upper);
-  CHECK(std::vector<dtdma::Scalar>(original.rhs().begin(),
-                                   original.rhs().end()) == rhs);
 }
 
 TEST_CASE("Forward coefficient preparation leaves other entries initialized") {
   dtdma::TridiagonalBatch original(4, 2);
   dtdma::PreparedOperatorBatch prepared(4, 2);
 
-  for (std::size_t system = 0; system < original.batch_size(); ++system) {
+  for (std::size_t system = 0; system < original.system_count(); ++system) {
     original.lower(1, system) = 1.0F;
     original.diagonal(1, system) = 4.0F;
     original.upper(1, system) = 1.0F;
@@ -162,7 +157,7 @@ TEST_CASE("Forward coefficient preparation leaves other entries initialized") {
 
   dtdma::prepare_forward_coefficients(original, prepared);
 
-  for (std::size_t system = 0; system < original.batch_size(); ++system) {
+  for (std::size_t system = 0; system < original.system_count(); ++system) {
     CHECK(prepared.prepared_lower(0, system) == 0.0F);
     CHECK(prepared.prepared_diagonal(0, system) == 0.0F);
   }
@@ -320,12 +315,11 @@ TEST_CASE("Backward coefficient preparation preserves original and forward state
   dtdma::PreparedOperatorBatch prepared(5, 2);
 
   for (std::size_t row = 0; row < original.row_count(); ++row) {
-    for (std::size_t system = 0; system < original.batch_size(); ++system) {
+    for (std::size_t system = 0; system < original.system_count(); ++system) {
       const auto value = static_cast<dtdma::Scalar>(row * 3 + system + 1);
       original.lower(row, system) = 0.1F * value;
       original.diagonal(row, system) = 10.0F + value;
       original.upper(row, system) = 0.2F * value;
-      original.rhs(row, system) = 20.0F + value;
     }
   }
 
@@ -335,8 +329,6 @@ TEST_CASE("Backward coefficient preparation preserves original and forward state
       original.diagonal().begin(), original.diagonal().end());
   const std::vector<dtdma::Scalar> original_upper(original.upper().begin(),
                                                    original.upper().end());
-  const std::vector<dtdma::Scalar> original_rhs(original.rhs().begin(),
-                                                 original.rhs().end());
 
   dtdma::prepare_forward_coefficients(original, prepared);
   const std::vector<dtdma::Scalar> forward_lower(
@@ -353,13 +345,11 @@ TEST_CASE("Backward coefficient preparation preserves original and forward state
         original_diagonal);
   CHECK(std::vector<dtdma::Scalar>(original.upper().begin(),
                                    original.upper().end()) == original_upper);
-  CHECK(std::vector<dtdma::Scalar>(original.rhs().begin(),
-                                   original.rhs().end()) == original_rhs);
 
-  for (std::size_t system = 0; system < original.batch_size(); ++system) {
+  for (std::size_t system = 0; system < original.system_count(); ++system) {
     for (std::size_t row = 1; row < original.row_count(); ++row) {
       const std::size_t index =
-          dtdma::canonical_index(row, system, original.batch_size());
+          dtdma::canonical_index(row, system, original.system_count());
       CHECK(prepared.prepared_diagonal(row, system) ==
             forward_diagonal[index]);
     }
@@ -367,7 +357,7 @@ TEST_CASE("Backward coefficient preparation preserves original and forward state
     for (std::size_t row = original.row_count() - 2;
          row < original.row_count(); ++row) {
       const std::size_t index =
-          dtdma::canonical_index(row, system, original.batch_size());
+          dtdma::canonical_index(row, system, original.system_count());
       CHECK(prepared.prepared_lower(row, system) == forward_lower[index]);
     }
   }
@@ -401,8 +391,6 @@ TEST_CASE("The complete prepared operator agrees with the active CaNS reference 
       4.5F, 5.25F, 6.125F, 5.875F, 6.75F};
   const std::array<dtdma::Scalar, 5> original_upper{
       -0.625F, 1.375F, -0.875F, 1.25F, -0.5F};
-  const std::array<dtdma::Scalar, 5> original_rhs{
-      2.0F, -3.0F, 4.5F, -6.0F, 7.25F};
   const std::array<dtdma::Scalar, 5> cans_prepared_lower{
       0.75F, -1.30050015F, 0.216538385F, 0.0530035309F,
       -0.0105493469F};
@@ -417,7 +405,6 @@ TEST_CASE("The complete prepared operator agrees with the active CaNS reference 
     original.lower(row, 0) = original_lower[row];
     original.diagonal(row, 0) = original_diagonal[row];
     original.upper(row, 0) = original_upper[row];
-    original.rhs(row, 0) = original_rhs[row];
   }
 
   dtdma::prepare_forward_coefficients(original, prepared);
@@ -433,6 +420,5 @@ TEST_CASE("The complete prepared operator agrees with the active CaNS reference 
     CHECK(original.lower(row, 0) == original_lower[row]);
     CHECK(original.diagonal(row, 0) == original_diagonal[row]);
     CHECK(original.upper(row, 0) == original_upper[row]);
-    CHECK(original.rhs(row, 0) == original_rhs[row]);
   }
 }

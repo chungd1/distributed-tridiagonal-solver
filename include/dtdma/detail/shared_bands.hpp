@@ -1,6 +1,5 @@
 #pragma once
 
-#include "dtdma/reduced_rhs_batch.hpp"
 #include "dtdma/scalar.hpp"
 
 #include <cstddef>
@@ -10,23 +9,14 @@
 
 namespace dtdma::detail {
 
-class SharedBandsAndRhs {
+class SharedBands {
  public:
-  SharedBandsAndRhs(const std::size_t row_count,
-                    const std::size_t batch_size)
-      : rhs_(row_count, batch_size),
+  explicit SharedBands(const std::size_t row_count)
+      : row_count_(checked_row_count(row_count)),
         lower_(row_count),
         upper_(row_count) {}
 
-  [[nodiscard]] std::size_t row_count() const noexcept {
-    return rhs_.row_count();
-  }
-  [[nodiscard]] std::size_t batch_size() const noexcept {
-    return rhs_.batch_size();
-  }
-  [[nodiscard]] std::size_t rhs_element_count() const noexcept {
-    return rhs_.element_count();
-  }
+  [[nodiscard]] std::size_t row_count() const noexcept { return row_count_; }
 
   [[nodiscard]] Scalar& lower(const std::size_t row) {
     return lower_[checked_row(row)];
@@ -41,21 +31,6 @@ class SharedBandsAndRhs {
     return upper_[checked_row(row)];
   }
 
-  [[nodiscard]] Scalar& rhs(const std::size_t row,
-                            const std::size_t system) {
-    return rhs_.rhs(row, system);
-  }
-  [[nodiscard]] const Scalar& rhs(const std::size_t row,
-                                  const std::size_t system) const {
-    return rhs_.rhs(row, system);
-  }
-
-  void check_system(const std::size_t system) const {
-    if (system >= batch_size()) {
-      throw std::out_of_range("system index is out of range");
-    }
-  }
-
   [[nodiscard]] std::span<Scalar> lower() noexcept { return lower_; }
   [[nodiscard]] std::span<const Scalar> lower() const noexcept {
     return lower_;
@@ -64,12 +39,16 @@ class SharedBandsAndRhs {
   [[nodiscard]] std::span<const Scalar> upper() const noexcept {
     return upper_;
   }
-  [[nodiscard]] std::span<Scalar> rhs() noexcept { return rhs_.rhs(); }
-  [[nodiscard]] std::span<const Scalar> rhs() const noexcept {
-    return rhs_.rhs();
-  }
 
  private:
+  [[nodiscard]] static std::size_t checked_row_count(
+      const std::size_t row_count) {
+    if (row_count == 0) {
+      throw std::invalid_argument("row count must be greater than zero");
+    }
+    return row_count;
+  }
+
   [[nodiscard]] std::size_t checked_row(const std::size_t row) const {
     if (row >= row_count()) {
       throw std::out_of_range("row index is out of range");
@@ -77,7 +56,7 @@ class SharedBandsAndRhs {
     return row;
   }
 
-  ReducedRhsBatch rhs_;
+  std::size_t row_count_;
   std::vector<Scalar> lower_;
   std::vector<Scalar> upper_;
 };

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dtdma/detail/shared_bands_and_rhs.hpp"
+#include "dtdma/detail/shared_bands.hpp"
 #include "dtdma/scalar.hpp"
 #include "dtdma/shared_prepared_operator.hpp"
 
@@ -11,20 +11,16 @@
 
 namespace dtdma {
 
-class SharedTridiagonalBatch {
+class TridiagonalShared {
  public:
   using PreparedOperator = SharedPreparedOperator;
-  using ReducedOperator = SharedTridiagonalBatch;
+  using ReducedOperator = TridiagonalShared;
 
-  SharedTridiagonalBatch(const std::size_t row_count,
-                         const std::size_t batch_size)
-      : storage_(row_count, batch_size), diagonal_(row_count) {}
+  explicit TridiagonalShared(const std::size_t row_count)
+      : storage_(row_count), diagonal_(row_count) {}
 
   [[nodiscard]] std::size_t row_count() const noexcept {
     return storage_.row_count();
-  }
-  [[nodiscard]] std::size_t batch_size() const noexcept {
-    return storage_.batch_size();
   }
   [[nodiscard]] Scalar& lower(const std::size_t row) {
     return storage_.lower(row);
@@ -33,13 +29,11 @@ class SharedTridiagonalBatch {
     return storage_.lower(row);
   }
   [[nodiscard]] Scalar& lower(const std::size_t row,
-                              const std::size_t system) {
-    storage_.check_system(system);
+                              const std::size_t) {
     return storage_.lower(row);
   }
   [[nodiscard]] const Scalar& lower(const std::size_t row,
-                                    const std::size_t system) const {
-    storage_.check_system(system);
+                                    const std::size_t) const {
     return storage_.lower(row);
   }
 
@@ -50,13 +44,11 @@ class SharedTridiagonalBatch {
     return diagonal_[checked_row(row)];
   }
   [[nodiscard]] Scalar& diagonal(const std::size_t row,
-                                 const std::size_t system) {
-    storage_.check_system(system);
+                                 const std::size_t) {
     return diagonal_[checked_row(row)];
   }
   [[nodiscard]] const Scalar& diagonal(const std::size_t row,
-                                       const std::size_t system) const {
-    storage_.check_system(system);
+                                       const std::size_t) const {
     return diagonal_[checked_row(row)];
   }
 
@@ -67,23 +59,12 @@ class SharedTridiagonalBatch {
     return storage_.upper(row);
   }
   [[nodiscard]] Scalar& upper(const std::size_t row,
-                              const std::size_t system) {
-    storage_.check_system(system);
+                              const std::size_t) {
     return storage_.upper(row);
   }
   [[nodiscard]] const Scalar& upper(const std::size_t row,
-                                    const std::size_t system) const {
-    storage_.check_system(system);
+                                    const std::size_t) const {
     return storage_.upper(row);
-  }
-
-  [[nodiscard]] Scalar& rhs(const std::size_t row,
-                            const std::size_t system) {
-    return storage_.rhs(row, system);
-  }
-  [[nodiscard]] const Scalar& rhs(const std::size_t row,
-                                  const std::size_t system) const {
-    return storage_.rhs(row, system);
   }
 
   [[nodiscard]] std::span<Scalar> lower() noexcept {
@@ -102,10 +83,6 @@ class SharedTridiagonalBatch {
   [[nodiscard]] std::span<const Scalar> upper() const noexcept {
     return storage_.upper();
   }
-  [[nodiscard]] std::span<Scalar> rhs() noexcept { return storage_.rhs(); }
-  [[nodiscard]] std::span<const Scalar> rhs() const noexcept {
-    return storage_.rhs();
-  }
 
  private:
   [[nodiscard]] std::size_t checked_row(const std::size_t row) const {
@@ -115,7 +92,7 @@ class SharedTridiagonalBatch {
     return row;
   }
 
-  detail::SharedBandsAndRhs storage_;
+  detail::SharedBands storage_;
   std::vector<Scalar> diagonal_;
 };
 

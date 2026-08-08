@@ -1,6 +1,8 @@
 #include "dtdma/batched_thomas_solver.hpp"
+#include "dtdma/rhs_batch.hpp"
 #include "dtdma/scalar.hpp"
 #include "dtdma/tridiagonal_batch.hpp"
+#include "dtdma/tridiagonal_shared.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -15,38 +17,40 @@ namespace {
 
 constexpr dtdma::Scalar tolerance = 1.0e-4F;
 
-void construct_rhs(dtdma::TridiagonalBatch& batch,
+template <typename Coefficients>
+void construct_rhs(const Coefficients& coefficients,
+                   dtdma::RhsBatch& rhs,
                    const std::vector<dtdma::Scalar>& exact_solution) {
-  for (std::size_t row = 0; row < batch.row_count(); ++row) {
-    for (std::size_t system = 0; system < batch.batch_size(); ++system) {
+  for (std::size_t row = 0; row < rhs.row_count(); ++row) {
+    for (std::size_t system = 0; system < rhs.batch_size(); ++system) {
       dtdma::Scalar value =
-          batch.diagonal(row, system) *
+          coefficients.diagonal(row, system) *
           exact_solution[dtdma::canonical_index(row, system,
-                                                 batch.batch_size())];
+                                                 rhs.batch_size())];
 
       if (row > 0) {
-        value += batch.lower(row, system) *
+        value += coefficients.lower(row, system) *
                  exact_solution[dtdma::canonical_index(
-                     row - 1, system, batch.batch_size())];
+                     row - 1, system, rhs.batch_size())];
       }
-      if (row + 1 < batch.row_count()) {
-        value += batch.upper(row, system) *
+      if (row + 1 < coefficients.row_count()) {
+        value += coefficients.upper(row, system) *
                  exact_solution[dtdma::canonical_index(
-                     row + 1, system, batch.batch_size())];
+                     row + 1, system, rhs.batch_size())];
       }
 
-      batch.rhs(row, system) = value;
+      rhs.rhs(row, system) = value;
     }
   }
 }
 
-void check_solution(const dtdma::TridiagonalBatch& batch,
+void check_solution(const dtdma::RhsBatch& rhs,
                     const std::vector<dtdma::Scalar>& exact_solution) {
-  for (std::size_t row = 0; row < batch.row_count(); ++row) {
-    for (std::size_t system = 0; system < batch.batch_size(); ++system) {
+  for (std::size_t row = 0; row < rhs.row_count(); ++row) {
+    for (std::size_t system = 0; system < rhs.batch_size(); ++system) {
       const std::size_t index =
-          dtdma::canonical_index(row, system, batch.batch_size());
-      CHECK(batch.rhs(row, system) ==
+          dtdma::canonical_index(row, system, rhs.batch_size());
+      CHECK(rhs.rhs(row, system) ==
             Catch::Approx(exact_solution[index]).margin(tolerance));
     }
   }
@@ -59,6 +63,7 @@ TEST_CASE("The batched Thomas solver solves constant-coefficient systems") {
 
   for (const std::size_t batch_size : std::array<std::size_t, 3>{1, 2, 5}) {
     dtdma::TridiagonalBatch batch(row_count, batch_size);
+    dtdma::RhsBatch rhs(row_count, batch_size);
     std::vector<dtdma::Scalar> exact_solution(batch.element_count());
 
     for (std::size_t row = 0; row < row_count; ++row) {
@@ -71,9 +76,9 @@ TEST_CASE("The batched Thomas solver solves constant-coefficient systems") {
       }
     }
 
-    construct_rhs(batch, exact_solution);
-    dtdma::batched_thomas_solve(batch);
-    check_solution(batch, exact_solution);
+    construct_rhs(batch, rhs, exact_solution);
+    dtdma::batched_thomas_solve(batch, rhs);
+    check_solution(rhs, exact_solution);
   }
 }
 
@@ -81,6 +86,7 @@ TEST_CASE("The batched Thomas solver handles row-varying coefficients") {
   constexpr std::size_t row_count = 7;
   constexpr std::size_t batch_size = 3;
   dtdma::TridiagonalBatch batch(row_count, batch_size);
+  dtdma::RhsBatch rhs(row_count, batch_size);
   std::vector<dtdma::Scalar> exact_solution(batch.element_count());
 
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -95,15 +101,16 @@ TEST_CASE("The batched Thomas solver handles row-varying coefficients") {
     }
   }
 
-  construct_rhs(batch, exact_solution);
-  dtdma::batched_thomas_solve(batch);
-  check_solution(batch, exact_solution);
+  construct_rhs(batch, rhs, exact_solution);
+  dtdma::batched_thomas_solve(batch, rhs);
+  check_solution(rhs, exact_solution);
 }
 
 TEST_CASE("The batched Thomas solver handles system-varying coefficients") {
   constexpr std::size_t row_count = 5;
   constexpr std::size_t batch_size = 4;
   dtdma::TridiagonalBatch batch(row_count, batch_size);
+  dtdma::RhsBatch rhs(row_count, batch_size);
   std::vector<dtdma::Scalar> exact_solution(batch.element_count());
 
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -119,15 +126,16 @@ TEST_CASE("The batched Thomas solver handles system-varying coefficients") {
     }
   }
 
-  construct_rhs(batch, exact_solution);
-  dtdma::batched_thomas_solve(batch);
-  check_solution(batch, exact_solution);
+  construct_rhs(batch, rhs, exact_solution);
+  dtdma::batched_thomas_solve(batch, rhs);
+  check_solution(rhs, exact_solution);
 }
 
 TEST_CASE("The batched Thomas solver solves deterministic random systems") {
   constexpr std::size_t row_count = 9;
   constexpr std::size_t batch_size = 6;
   dtdma::TridiagonalBatch batch(row_count, batch_size);
+  dtdma::RhsBatch rhs(row_count, batch_size);
   std::vector<dtdma::Scalar> exact_solution(batch.element_count());
   std::mt19937 generator(1729U);
   std::uniform_real_distribution<dtdma::Scalar> coefficient_distribution(
@@ -151,15 +159,16 @@ TEST_CASE("The batched Thomas solver solves deterministic random systems") {
     }
   }
 
-  construct_rhs(batch, exact_solution);
-  dtdma::batched_thomas_solve(batch);
-  check_solution(batch, exact_solution);
+  construct_rhs(batch, rhs, exact_solution);
+  dtdma::batched_thomas_solve(batch, rhs);
+  check_solution(rhs, exact_solution);
 }
 
 TEST_CASE("The batched Thomas solver preserves coefficients and overwrites RHS") {
   constexpr std::size_t row_count = 4;
   constexpr std::size_t batch_size = 3;
   dtdma::TridiagonalBatch batch(row_count, batch_size);
+  dtdma::RhsBatch rhs(row_count, batch_size);
   std::vector<dtdma::Scalar> exact_solution(batch.element_count());
 
   for (std::size_t row = 0; row < row_count; ++row) {
@@ -172,17 +181,17 @@ TEST_CASE("The batched Thomas solver preserves coefficients and overwrites RHS")
     }
   }
 
-  construct_rhs(batch, exact_solution);
+  construct_rhs(batch, rhs, exact_solution);
   const std::vector<dtdma::Scalar> original_lower(batch.lower().begin(),
                                                   batch.lower().end());
   const std::vector<dtdma::Scalar> original_diagonal(batch.diagonal().begin(),
                                                      batch.diagonal().end());
   const std::vector<dtdma::Scalar> original_upper(batch.upper().begin(),
                                                   batch.upper().end());
-  const std::vector<dtdma::Scalar> original_rhs(batch.rhs().begin(),
-                                                batch.rhs().end());
+  const std::vector<dtdma::Scalar> original_rhs(rhs.rhs().begin(),
+                                                rhs.rhs().end());
 
-  dtdma::batched_thomas_solve(batch);
+  dtdma::batched_thomas_solve(batch, rhs);
 
   CHECK(std::vector<dtdma::Scalar>(batch.lower().begin(), batch.lower().end()) ==
         original_lower);
@@ -190,7 +199,31 @@ TEST_CASE("The batched Thomas solver preserves coefficients and overwrites RHS")
                                    batch.diagonal().end()) == original_diagonal);
   CHECK(std::vector<dtdma::Scalar>(batch.upper().begin(), batch.upper().end()) ==
         original_upper);
-  CHECK(std::vector<dtdma::Scalar>(batch.rhs().begin(), batch.rhs().end()) !=
+  CHECK(std::vector<dtdma::Scalar>(rhs.rhs().begin(), rhs.rhs().end()) !=
         original_rhs);
-  check_solution(batch, exact_solution);
+  check_solution(rhs, exact_solution);
+}
+
+TEST_CASE("Shared coefficients solve RHS batches with different batch sizes") {
+  constexpr std::size_t row_count = 5;
+  dtdma::TridiagonalShared coefficients(row_count);
+  for (std::size_t row = 0; row < row_count; ++row) {
+    coefficients.lower(row) = row == 0 ? 0.0F : -1.0F;
+    coefficients.diagonal(row) = 4.0F;
+    coefficients.upper(row) = row + 1 == row_count ? 0.0F : -1.0F;
+  }
+
+  for (const std::size_t batch_size : std::array<std::size_t, 2>{1, 3}) {
+    dtdma::RhsBatch rhs(row_count, batch_size);
+    std::vector<dtdma::Scalar> exact_solution(rhs.element_count());
+    for (std::size_t row = 0; row < row_count; ++row) {
+      for (std::size_t system = 0; system < batch_size; ++system) {
+        exact_solution[dtdma::canonical_index(row, system, batch_size)] =
+            static_cast<dtdma::Scalar>(10 * system + row + 1);
+      }
+    }
+    construct_rhs(coefficients, rhs, exact_solution);
+    dtdma::batched_thomas_solve(coefficients, rhs);
+    check_solution(rhs, exact_solution);
+  }
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dtdma/reduced_rhs_batch.hpp"
+#include "dtdma/rhs_batch.hpp"
 #include "dtdma/scalar.hpp"
 
 #include <cstddef>
@@ -11,9 +11,9 @@
 
 namespace dtdma {
 
-class ReducedRhsEndpoints {
+class EndpointBatch {
  public:
-  explicit ReducedRhsEndpoints(const std::size_t batch_size)
+  explicit EndpointBatch(const std::size_t batch_size)
       : batch_size_(batch_size),
         element_count_(checked_element_count(batch_size)),
         endpoints_(element_count_) {}
@@ -48,7 +48,7 @@ class ReducedRhsEndpoints {
     }
     if (batch_size >
         std::numeric_limits<std::size_t>::max() / endpoint_count) {
-      throw std::length_error("reduced RHS endpoint count overflows");
+      throw std::length_error("endpoint batch element count overflows");
     }
     return endpoint_count * batch_size;
   }
@@ -71,8 +71,8 @@ class ReducedRhsEndpoints {
 };
 
 inline void extract_reduced_rhs_endpoints(
-    const ReducedRhsBatch& working,
-    ReducedRhsEndpoints& endpoints) {
+    const RhsBatch& working,
+    EndpointBatch& endpoints) {
   if (working.row_count() < 3) {
     throw std::invalid_argument(
         "endpoint extraction requires at least three rows");
